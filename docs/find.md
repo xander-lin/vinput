@@ -61,3 +61,8 @@
 - clipboard: `fcitx5/src/modules/clipboard/` (Module 类型)
 - quickphrase: `fcitx5/src/modules/quickphrase/` (PreInputMethod 阶段拦截)
 - quwei: `fcitx5-quwei/` (简单 InputMethodEngine 入门示例)
+
+### CapsLock 还原
+- Wayland V1 下 fcitx5 无法拦截 CapsLock (compositor 先处理)
+- **uinput**: 内核级虚键注入, 兼容所有 compositor。关键: 设备必须**常驻**（创建一次、反复发键），不能每次创建销毁——compositor 需要时间初始化虚拟键盘才能正确处理 modifier 切换
+- XTest 只能影响 XWayland，Wayland 原生应用无效
