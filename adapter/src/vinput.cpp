@@ -19,6 +19,12 @@
 #include <X11/keysym.h>
 #include <X11/extensions/XTest.h>
 
+// uinput: 内核级假按键注入, 兼容所有 Wayland compositor
+#include <fcntl.h>
+#include <unistd.h>
+#include <linux/uinput.h>
+#include <string.h>
+
 // notifications addon 公共 API (跨 addon 调用)
 #include <fcitx-module/notifications/notifications_public.h>
 
@@ -68,30 +74,49 @@ private:
     static constexpr uint64_t kLongPressUsec = 500 * 1000; // 500ms
 
     // 还原 CapsLock 状态
-    // X11/XWayland → XTest 发假按键
-    // 原生 Wayland  → 通过 forwardKey 向 compositor 转发假 CapsLock
+    // 优先 uinput (内核级, 兼容所有 compositor), 其次 XTest (X11)
     void revertCapsLock() {
-        auto *display = XOpenDisplay(nullptr);
-        if (display) {
-            FCITX_INFO() << "Vinput revert CapsLock via XTest";
-            auto keycode = XKeysymToKeycode(display, XK_Caps_Lock);
-            XTestFakeKeyEvent(display, keycode, True, CurrentTime);
-            XTestFakeKeyEvent(display, keycode, False, CurrentTime);
-            XFlush(display);
-            XCloseDisplay(display);
+        // 方案 1: uinput — 内核虚键注入, 对所有 compositor 生效
+        int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+        if (fd >= 0) {
+            ioctl(fd, UI_SET_EVBIT, EV_KEY);
+            ioctl(fd, UI_SET_KEYBIT, KEY_CAPSLOCK);
+
+            struct uinput_setup usetup = {};
+            strcpy(usetup.name, "Vinput CapsLock revert");
+            usetup.id.bustype = BUS_VIRTUAL;
+            ioctl(fd, UI_DEV_SETUP, &usetup);
+            ioctl(fd, UI_DEV_CREATE);
+
+            struct input_event ev = {};
+            ev.type = EV_KEY;
+            ev.code = KEY_CAPSLOCK;
+            ev.value = 1;
+            write(fd, &ev, sizeof(ev));
+            ev.value = 0;
+            write(fd, &ev, sizeof(ev));
+            ev.type = EV_SYN;
+            ev.code = SYN_REPORT;
+            ev.value = 0;
+            write(fd, &ev, sizeof(ev));
+
+            ioctl(fd, UI_DEV_DESTROY);
+            close(fd);
+            FCITX_INFO() << "Vinput revert CapsLock via uinput";
             return;
         }
 
-        FCITX_INFO() << "Vinput revert CapsLock via forwardKey";
-        auto *ic = instance_->lastFocusedInputContext();
-        if (ic) {
-            reverting_ = true;
-            fcitx::Key fakeCaps(FcitxKey_Caps_Lock, fcitx::KeyState(0));
-            ic->forwardKey(fakeCaps, false);
-            ic->forwardKey(fakeCaps, true);
-            reverting_ = false;
-        } else {
-            FCITX_INFO() << "Vinput revert CapsLock: no InputContext";
+        // 方案 2: XTest — X11/XWayland 回退方案
+        auto *display = XOpenDisplay(nullptr);
+        if (display) {
+            auto keycode = XKeysymToKeycode(display, XK_Caps_Lock);
+            if (keycode) {
+                FCITX_INFO() << "Vinput revert CapsLock via XTest";
+                XTestFakeKeyEvent(display, keycode, True, CurrentTime);
+                XTestFakeKeyEvent(display, keycode, False, CurrentTime);
+                XFlush(display);
+            }
+            XCloseDisplay(display);
         }
     }
 
