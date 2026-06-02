@@ -10,16 +10,25 @@ uv pip install vllm qwen-asr --pre \
     --extra-index-url https://wheels.vllm.ai/nightly/cu129
 ```
 
+## 下载模型
+
+```bash
+source ~/vllm-env/bin/activate
+# ModelScope (国内)
+modelscope download --model Qwen/Qwen3-ASR-1.7B --local_dir ~/models/Qwen3-ASR-1.7B
+# 或 HuggingFace
+huggingface-cli download Qwen/Qwen3-ASR-1.7B --local-dir ~/models/Qwen3-ASR-1.7B
+```
+
 ## 启动 vLLM 服务
 
 ```bash
 source ~/vllm-env/bin/activate
-vllm serve Qwen/Qwen3-ASR-1.7B \
-    --uds $XDG_RUNTIME_DIR/vllm.sock \
+SOCK="$XDG_RUNTIME_DIR/vllm-$(id -u).sock"
+vllm serve ~/models/Qwen3-ASR-1.7B \
+    --uds "$SOCK" \
     --gpu-memory-utilization 0.8
 ```
-
-首次运行会自动下载模型 (~3.5GB)。服务启动后保持运行。
 
 ## 验证
 
