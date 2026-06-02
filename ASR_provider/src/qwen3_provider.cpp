@@ -42,15 +42,12 @@ static size_t curlWriteCb(void *ptr, size_t size, size_t nmemb, void *user) {
 
 Qwen3AsrProvider::Qwen3AsrProvider(const std::string &vllmSocket)
     : vllmSocket_(vllmSocket) {
-    // 默认 socket 路径: $XDG_RUNTIME_DIR/vllm.sock 或 /tmp/vllm-<uid>.sock
     if (vllmSocket_.empty()) {
         const char *runtime = getenv("XDG_RUNTIME_DIR");
-        if (runtime) {
-            vllmSocket_ = std::string(runtime) + "/vllm.sock";
-        } else {
-            vllmSocket_ = "/tmp/vllm-" + std::to_string(getuid()) + ".sock";
-        }
+        auto base = runtime ? std::string(runtime) : "/tmp";
+        vllmSocket_ = base + "/vllm-" + std::to_string(getuid()) + ".sock";
     }
+    fprintf(stderr, "Vinput: vLLM socket = %s\n", vllmSocket_.c_str());
     tempWavPath_ = "/tmp/vinput_qwen3_" + std::to_string(getpid()) + ".wav";
 }
 
