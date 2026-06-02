@@ -14,14 +14,10 @@
 #include <fcitx-utils/keysym.h>    // FcitxKey_Caps_Lock 等键值常量
 #include <fcitx-utils/log.h>       // 日志宏 FCITX_INFO/FCITX_DEBUG 等
 
-// X11/XTest: 用于在拦截 CapsLock 后还原系统大写锁定状态
-#include <X11/Xlib.h>
-#include <X11/keysym.h>
-#include <X11/extensions/XTest.h>
-
-// uinput: 内核级假按键注入, 兼容所有 Wayland compositor
+// uinput: 内核级常驻虚键设备, 兼容所有 Wayland compositor
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include <linux/uinput.h>
 #include <string.h>
 
@@ -47,6 +43,9 @@ public:
         reloadConfig();
         FCITX_INFO() << "Vinput addon loaded";
 
+        // 创建常驻 uinput 虚键盘, 用于还原 CapsLock
+        initUinput();
+
         // 在 PreInputMethod 阶段监听键盘事件 (早于输入法引擎)
         keyWatcher_ = instance_->watchEvent(
             fcitx::EventType::InputContextKeyEvent,
@@ -55,6 +54,13 @@ public:
                 auto &keyEvent = static_cast<fcitx::KeyEvent &>(event);
                 onKeyEvent(keyEvent);
             });
+    }
+
+    ~VinputAddon() override {
+        if (uinputFd_ >= 0) {
+            ioctl(uinputFd_, UI_DEV_DESTROY);
+            close(uinputFd_);
+        }
     }
 
     // 配置读写
@@ -73,71 +79,54 @@ private:
     static constexpr char confFile[] = "conf/vinput.conf";
     static constexpr uint64_t kLongPressUsec = 500 * 1000; // 500ms
 
-    // 还原 CapsLock 状态
-    // 优先 uinput (内核级, 兼容所有 compositor), 其次 XTest (X11)
+    // 还原 CapsLock 状态 — 通过常驻 uinput 虚键发送 CapsLock 按键
     void revertCapsLock() {
-        // 方案 1: uinput — 内核虚键注入, 对所有 compositor 生效
-        int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
-        if (fd >= 0) {
-            ioctl(fd, UI_SET_EVBIT, EV_KEY);
-            ioctl(fd, UI_SET_KEYBIT, KEY_CAPSLOCK);
-            ioctl(fd, UI_SET_EVBIT, EV_LED);
-            ioctl(fd, UI_SET_LEDBIT, LED_CAPSL);
+        if (uinputFd_ < 0) return;
 
-            struct uinput_setup usetup = {};
-            strcpy(usetup.name, "Vinput CapsLock revert");
-            usetup.id.bustype = BUS_VIRTUAL;
-            ioctl(fd, UI_DEV_SETUP, &usetup);
-            ioctl(fd, UI_DEV_CREATE);
+        struct input_event ev = {};
+        ev.type = EV_KEY;
+        ev.code = KEY_CAPSLOCK;
+        ev.value = 1;
+        write(uinputFd_, &ev, sizeof(ev));
+        ev.value = 0;
+        write(uinputFd_, &ev, sizeof(ev));
+        ev.type = EV_SYN;
+        ev.code = SYN_REPORT;
+        ev.value = 0;
+        write(uinputFd_, &ev, sizeof(ev));
+        FCITX_INFO() << "Vinput revert CapsLock via uinput";
+    }
 
-            // compositor 需要时间识别虚设备, 稍等再发键
-            usleep(10000); // 10ms
-
-            struct input_event ev = {};
-            ev.type = EV_KEY;
-            ev.code = KEY_CAPSLOCK;
-            ev.value = 1;
-            write(fd, &ev, sizeof(ev));
-            ev.value = 0;
-            write(fd, &ev, sizeof(ev));
-            ev.type = EV_SYN;
-            ev.code = SYN_REPORT;
-            ev.value = 0;
-            write(fd, &ev, sizeof(ev));
-
-            // compositor 处理完事件后再销毁 (modifier 切换需要时间)
-            usleep(200000); // 200ms
-
-            ioctl(fd, UI_DEV_DESTROY);
-            close(fd);
-            FCITX_INFO() << "Vinput revert CapsLock via uinput";
+    // 创建常驻 uinput 虚拟键盘设备
+    void initUinput() {
+        uinputFd_ = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+        if (uinputFd_ < 0) {
+            FCITX_INFO() << "Vinput: cannot open /dev/uinput";
             return;
         }
+        ioctl(uinputFd_, UI_SET_EVBIT, EV_KEY);
+        ioctl(uinputFd_, UI_SET_KEYBIT, KEY_CAPSLOCK);
+        ioctl(uinputFd_, UI_SET_EVBIT, EV_LED);
+        ioctl(uinputFd_, UI_SET_LEDBIT, LED_CAPSL);
 
-        // 方案 2: XTest — X11/XWayland 回退方案
-        auto *display = XOpenDisplay(nullptr);
-        if (display) {
-            auto keycode = XKeysymToKeycode(display, XK_Caps_Lock);
-            if (keycode) {
-                FCITX_INFO() << "Vinput revert CapsLock via XTest";
-                XTestFakeKeyEvent(display, keycode, True, CurrentTime);
-                XTestFakeKeyEvent(display, keycode, False, CurrentTime);
-                XFlush(display);
-            }
-            XCloseDisplay(display);
-        }
+        struct uinput_setup usetup = {};
+        strcpy(usetup.name, "Vinput vkbd");
+        usetup.id.bustype = BUS_VIRTUAL;
+        ioctl(uinputFd_, UI_DEV_SETUP, &usetup);
+        ioctl(uinputFd_, UI_DEV_CREATE);
+        FCITX_INFO() << "Vinput uinput device created";
     }
 
     fcitx::Instance *instance_;
     VinputConfig config_;
     std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>> keyWatcher_;
+    int uinputFd_ = -1;
 
     // 运行时依赖: notifications addon
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
 
     // 状态
     bool active_ = false;
-    bool reverting_ = false;  // 防止 forwardKey 触发的 CapsLock 事件递归
     std::unique_ptr<fcitx::EventSourceTime> timer_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
@@ -145,7 +134,7 @@ private:
 
     // 键盘事件回调
     void onKeyEvent(fcitx::KeyEvent &keyEvent) {
-        if (reverting_ || (!active_ && keyEvent.key().sym() != FcitxKey_Caps_Lock)) return;
+        if (!active_ && keyEvent.key().sym() != FcitxKey_Caps_Lock) return;
 
         if (keyEvent.isRelease()) {
             if (keyEvent.key().sym() == FcitxKey_Caps_Lock) {
