@@ -3,9 +3,9 @@
 ## 安装
 
 ```bash
-# 创建 Python 虚拟环境
-uv venv ~/vllm-env
-source ~/vllm-env/bin/activate
+mkdir -p ~/.local/share/vinput
+uv venv ~/.local/share/vinput/venv
+source ~/.local/share/vinput/venv/bin/activate
 uv pip install vllm qwen-asr --pre \
     --extra-index-url https://wheels.vllm.ai/nightly/cu129
 ```
@@ -13,7 +13,7 @@ uv pip install vllm qwen-asr --pre \
 ## 下载模型
 
 ```bash
-source ~/vllm-env/bin/activate
+source ~/.local/share/vinput/venv/bin/activate
 mkdir -p ~/.local/share/vinput/models
 
 # ModelScope (国内)
