@@ -32,6 +32,7 @@ private:
     std::thread recordThread_;
     std::thread sendThread_;
     std::atomic<bool> recording_{false};
+    bool vllmFailed_ = false;      // vLLM 启动失败，不再重试当前会话
 };
 
 class Qwen3AsrProviderFactory : public IAsrProviderFactory {

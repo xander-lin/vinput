@@ -140,7 +140,8 @@ bool Qwen3AsrProvider::ensureServer() {
     if (stat(uds.c_str(), &st) == 0) return true;
 
     fprintf(stderr, "Vinput: starting vLLM service...\n");
-    system("systemctl --user start vllm-qwen3 2>/dev/null");
+    int ret = system("systemctl --user start vllm-qwen3 2>&1");
+    fprintf(stderr, "Vinput: systemctl returned %d\n", ret);
 
     for (int i = 0; i < 60; i++) {
         usleep(500000);
