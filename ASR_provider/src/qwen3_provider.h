@@ -18,10 +18,13 @@ public:
 
 private:
     void recordThread();
-    void sendToVllm();
-    bool ensureServer();
-    bool trySend(const std::string &url, const std::string &udsPath,
-                 const std::string &json, std::string &resp);
+    static void sendToVllm(std::string wavPath, std::string uds,
+                           std::string host, int port,
+                           AsrResultCallback onResult,
+                           AsrErrorCallback onError);
+    static bool ensureServer(const std::string &uds);
+    static bool trySend(const std::string &url, const std::string &udsPath,
+                        const std::string &json, std::string &resp);
 
     // 配置 (由 adapter 注入)
     std::string udsPath_;       // 空 = 自动: $XDG_RUNTIME_DIR/vllm-<uid>.sock

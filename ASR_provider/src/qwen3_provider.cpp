@@ -52,9 +52,9 @@ Qwen3AsrProvider::Qwen3AsrProvider() {
 }
 
 Qwen3AsrProvider::~Qwen3AsrProvider() {
-    stop();
+    recording_ = false;
     if (recordThread_.joinable()) recordThread_.join();
-    if (sendThread_.joinable()) sendThread_.join();
+    if (sendThread_.joinable()) sendThread_.detach();
     unlink(tempWavPath_.c_str());
 }
 
@@ -86,9 +86,18 @@ void Qwen3AsrProvider::stop() {
     recording_ = false;
     if (recordThread_.joinable()) recordThread_.join();
     if (onState_) onState_(false);
+
+    // 按值捕获所有数据，detach 后 this 销毁也安全
     if (sendThread_.joinable()) sendThread_.join();
-    sendThread_ = std::thread([this]() { sendToVllm(); });
-    sendThread_.join();
+    auto wav = tempWavPath_;
+    auto uds = udsPath_.empty() ? defaultUdsPath() : udsPath_;
+    auto host = tcpHost_;
+    auto port = tcpPort_;
+    auto onR = onResult_;
+    auto onE = onError_;
+    sendThread_ = std::thread([wav, uds, host, port, onR, onE]() {
+        sendToVllm(wav, uds, host, port, onR, onE);
+    });
 }
 
 void Qwen3AsrProvider::recordThread() {
@@ -134,8 +143,7 @@ void Qwen3AsrProvider::recordThread() {
     fprintf(stderr, "Vinput: recorded %d bytes\n", totalBytes);
 }
 
-bool Qwen3AsrProvider::ensureServer() {
-    auto uds = udsPath_.empty() ? defaultUdsPath() : udsPath_;
+bool Qwen3AsrProvider::ensureServer(const std::string &uds) {
     struct stat st;
     if (stat(uds.c_str(), &st) == 0) return true;
 
@@ -183,13 +191,16 @@ bool Qwen3AsrProvider::trySend(const std::string &url,
     return res == CURLE_OK;
 }
 
-void Qwen3AsrProvider::sendToVllm() {
-    FILE *f = fopen(tempWavPath_.c_str(), "rb");
-    if (!f) { if (onError_) onError_("no audio file"); return; }
+void Qwen3AsrProvider::sendToVllm(std::string wavPath, std::string uds,
+                                  std::string host, int port,
+                                  AsrResultCallback onResult,
+                                  AsrErrorCallback onError) {
+    FILE *f = fopen(wavPath.c_str(), "rb");
+    if (!f) { if (onError) onError("no audio file"); return; }
     fseek(f, 0, SEEK_END);
     long fileSize = ftell(f);
     rewind(f);
-    if (fileSize <= 44) { fclose(f); if (onError_) onError_("empty"); return; }
+    if (fileSize <= 44) { fclose(f); if (onError) onError("empty"); return; }
 
     std::vector<uint8_t> wavData(fileSize);
     fread(wavData.data(), 1, fileSize, f);
@@ -220,15 +231,14 @@ void Qwen3AsrProvider::sendToVllm() {
     bool ok = false;
 
     // 1) 尝试 UDS
-    auto uds = udsPath_.empty() ? defaultUdsPath() : udsPath_;
-    ensureServer(); // 懒加载
+    ensureServer(uds); // 懒加载
     fprintf(stderr, "Vinput: trying UDS %s\n", uds.c_str());
     ok = trySend("http://localhost/v1/chat/completions", uds, json, resp);
     if (!ok) {
         // 2) 回退 TCP
-        if (tcpPort_ > 0) {
-            auto tcpUrl = "http://" + tcpHost_ + ":" +
-                          std::to_string(tcpPort_) + "/v1/chat/completions";
+        if (port > 0) {
+            auto tcpUrl = "http://" + host + ":" +
+                          std::to_string(port) + "/v1/chat/completions";
             fprintf(stderr, "Vinput: UDS failed, trying TCP %s\n",
                     tcpUrl.c_str());
             ok = trySend(tcpUrl, "", json, resp);
@@ -236,17 +246,17 @@ void Qwen3AsrProvider::sendToVllm() {
     }
 
     if (!ok) {
-        if (onError_) onError_("vLLM: UDS and TCP both unreachable");
+        if (onError) onError("vLLM: UDS and TCP both unreachable");
         return;
     }
 
     auto p = resp.find("\"content\"");
-    if (p == std::string::npos) { if (onError_) onError_("vLLM: no content"); return; }
+    if (p == std::string::npos) { if (onError) onError("vLLM: no content"); return; }
     p = resp.find('"', p + 10);
-    if (p == std::string::npos) { if (onError_) onError_("vLLM: bad resp"); return; }
+    if (p == std::string::npos) { if (onError) onError("vLLM: bad resp"); return; }
     p++;
     auto e = resp.find('"', p);
-    if (e == std::string::npos) { if (onError_) onError_("vLLM: bad resp"); return; }
+    if (e == std::string::npos) { if (onError) onError("vLLM: bad resp"); return; }
 
     std::string text = resp.substr(p, e - p);
     while (!text.empty() && text[0] == '<') {
@@ -256,7 +266,7 @@ void Qwen3AsrProvider::sendToVllm() {
     }
 
     fprintf(stderr, "Vinput: text = %s\n", text.c_str());
-    if (onResult_) onResult_(text, true);
+    if (onResult) onResult(text, true);
 }
 
 std::unique_ptr<IAsrProvider> Qwen3AsrProviderFactory::create() {
