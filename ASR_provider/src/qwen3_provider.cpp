@@ -53,6 +53,8 @@ Qwen3AsrProvider::Qwen3AsrProvider() {
 
 Qwen3AsrProvider::~Qwen3AsrProvider() {
     stop();
+    if (recordThread_.joinable()) recordThread_.join();
+    if (sendThread_.joinable()) sendThread_.join();
     unlink(tempWavPath_.c_str());
 }
 
@@ -86,6 +88,7 @@ void Qwen3AsrProvider::stop() {
     if (onState_) onState_(false);
     if (sendThread_.joinable()) sendThread_.join();
     sendThread_ = std::thread([this]() { sendToVllm(); });
+    sendThread_.join();
 }
 
 void Qwen3AsrProvider::recordThread() {
