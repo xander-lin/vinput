@@ -41,6 +41,17 @@
 - `sendNotification(appName, replaceId, appIcon, summary, body, actions, timeout, actionCb, closedCb)`
   - 第二个参数 `replaceId` 是 `uint32_t`(数字)，不是字符串
 
+### commitString
+- `InputContext::commitString(text)` 向当前应用提交文本
+- `InputContext::updateUserInterface(InputPanel)` 刷新 UI
+
+### ASR Provider 接口
+- `IAsrProvider`: 抽象基类，`start()` / `stop()` + 异步回调（onResult/onError/onState）
+- `IAsrProviderFactory`: 工厂, `id()` / `name()` / `create()`
+- `AsrProviderRegistry`: 全局单例注册表，adapter 通过它发现和创建后端
+- MockAsrProvider: 测试用，`start()` 立即同步返回 "你好世界"
+- 后续真实后端（OpenAI Whisper、Azure Speech 等）通过 `FCITX_ADDON_DEPENDENCY_LOADER` 或直接链接接入
+
 ### 常见 addon 参考
 - clipboard: `fcitx5/src/modules/clipboard/` (Module 类型)
 - quickphrase: `fcitx5/src/modules/quickphrase/` (PreInputMethod 阶段拦截)
