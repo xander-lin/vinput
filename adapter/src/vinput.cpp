@@ -67,12 +67,10 @@ private:
     static constexpr char confFile[] = "conf/vinput.conf";
     static constexpr uint64_t kLongPressUsec = 500 * 1000; // 500ms
 
-    // 发送一个假的 CapsLock 按键来还原系统大写锁定状态
-    // X11/XWayland: CapsLock 在 XKB 层切换, filterAndAccept 无法拦截
-    // Wayland V1: compositor 处理 CapsLock, fcitx5 同样拦不住
-    // Wayland V2: fcitx5 接管键盘, filterAndAccept 就能拦住, 无需此函数
+    // 还原 CapsLock 状态
+    // X11/XWayland → XTest 发假按键
+    // 原生 Wayland  → 通过 forwardKey 向 compositor 转发假 CapsLock
     void revertCapsLock() {
-        // 方案 1: X11 / XWayland — 用 XTest 发假按键
         auto *display = XOpenDisplay(nullptr);
         if (display) {
             auto keycode = XKeysymToKeycode(display, XK_Caps_Lock);
@@ -83,9 +81,15 @@ private:
             return;
         }
 
-        // 方案 2: 原生 Wayland — 清空 fcitx5 内部 XKB 锁定状态
-        // 使用空字符串作为 display 名, fcitx5 会作用于默认 display
-        instance_->clearXkbStateMask("");
+        // 原生 Wayland: 通过 fcitx5 转发假按键给 compositor
+        auto *ic = instance_->lastFocusedInputContext();
+        if (ic) {
+            reverting_ = true;
+            fcitx::Key fakeCaps(FcitxKey_Caps_Lock, fcitx::KeyState(0));
+            ic->forwardKey(fakeCaps, false); // press
+            ic->forwardKey(fakeCaps, true);  // release
+            reverting_ = false;
+        }
     }
 
     fcitx::Instance *instance_;
@@ -97,6 +101,7 @@ private:
 
     // 状态
     bool active_ = false;
+    bool reverting_ = false;  // 防止 forwardKey 触发的 CapsLock 事件递归
     std::unique_ptr<fcitx::EventSourceTime> timer_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
@@ -104,7 +109,7 @@ private:
 
     // 键盘事件回调
     void onKeyEvent(fcitx::KeyEvent &keyEvent) {
-        if (!active_ && keyEvent.key().sym() != FcitxKey_Caps_Lock) return;
+        if (reverting_ || (!active_ && keyEvent.key().sym() != FcitxKey_Caps_Lock)) return;
 
         if (keyEvent.isRelease()) {
             if (keyEvent.key().sym() == FcitxKey_Caps_Lock) {
