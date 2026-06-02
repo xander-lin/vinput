@@ -73,6 +73,7 @@ private:
     void revertCapsLock() {
         auto *display = XOpenDisplay(nullptr);
         if (display) {
+            FCITX_INFO() << "Vinput revert CapsLock via XTest";
             auto keycode = XKeysymToKeycode(display, XK_Caps_Lock);
             XTestFakeKeyEvent(display, keycode, True, CurrentTime);
             XTestFakeKeyEvent(display, keycode, False, CurrentTime);
@@ -81,14 +82,16 @@ private:
             return;
         }
 
-        // 原生 Wayland: 通过 fcitx5 转发假按键给 compositor
+        FCITX_INFO() << "Vinput revert CapsLock via forwardKey";
         auto *ic = instance_->lastFocusedInputContext();
         if (ic) {
             reverting_ = true;
             fcitx::Key fakeCaps(FcitxKey_Caps_Lock, fcitx::KeyState(0));
-            ic->forwardKey(fakeCaps, false); // press
-            ic->forwardKey(fakeCaps, true);  // release
+            ic->forwardKey(fakeCaps, false);
+            ic->forwardKey(fakeCaps, true);
             reverting_ = false;
+        } else {
+            FCITX_INFO() << "Vinput revert CapsLock: no InputContext";
         }
     }
 
