@@ -105,8 +105,8 @@ private:
             ev.value = 0;
             write(fd, &ev, sizeof(ev));
 
-            // compositor 处理完事件后再销毁
-            usleep(50000); // 50ms
+            // compositor 处理完事件后再销毁 (modifier 切换需要时间)
+            usleep(200000); // 200ms
 
             ioctl(fd, UI_DEV_DESTROY);
             close(fd);
