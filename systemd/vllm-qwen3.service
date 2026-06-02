@@ -1,0 +1,14 @@
+[Unit]
+Description=vLLM Qwen3-ASR-1.7B
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/vllm-env/bin/vllm serve %h/.local/share/vinput/models/Qwen3-ASR-1.7B \
+    --uds %t/vllm-1000.sock \
+    --gpu-memory-utilization 0.8
+ExecStopPost=/bin/rm -f %t/vllm-1000.sock
+Restart=no
+
+[Install]
+WantedBy=default.target

@@ -3,6 +3,7 @@
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -116,7 +117,29 @@ void Qwen3AsrProvider::recordThread() {
             totalBytes, tempWavPath_.c_str());
 }
 
+bool Qwen3AsrProvider::ensureServer() {
+    // 检查 socket 是否已存在
+    struct stat st;
+    if (stat(vllmSocket_.c_str(), &st) == 0) return true;
+
+    // 懒加载: 启动 systemd user service
+    fprintf(stderr, "Vinput: starting vLLM service...\n");
+    system("systemctl --user start vllm-qwen3 2>/dev/null");
+
+    // 轮询等待 socket 出现 (最多 30s)
+    for (int i = 0; i < 60; i++) {
+        usleep(500000); // 500ms
+        if (stat(vllmSocket_.c_str(), &st) == 0) {
+            fprintf(stderr, "Vinput: vLLM ready after %dms\n", (i + 1) * 500);
+            return true;
+        }
+    }
+    fprintf(stderr, "Vinput: vLLM startup timeout\n");
+    return false;
+}
+
 void Qwen3AsrProvider::sendToVllm() {
+    ensureServer();
     FILE *f = fopen(tempWavPath_.c_str(), "rb");
     if (!f) {
         if (onError_) onError_("no audio file");

@@ -21,15 +21,16 @@ modelscope download --model Qwen/Qwen3-ASR-1.7B \
     --local_dir ~/.local/share/vinput/models/Qwen3-ASR-1.7B
 ```
 
-## 启动 vLLM 服务
+## 安装 systemd 服务 (开机自启 + 懒加载)
 
 ```bash
-source ~/vllm-env/bin/activate
-SOCK="$XDG_RUNTIME_DIR/vllm-$(id -u).sock"
-vllm serve ~/.local/share/vinput/models/Qwen3-ASR-1.7B \
-    --uds "$SOCK" \
-    --gpu-memory-utilization 0.8
+mkdir -p ~/.config/systemd/user
+cp systemd/vllm-qwen3.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable vllm-qwen3.service
 ```
+
+服务不会立即启动——adapter 首次连接 socket 时会自动拉起（轮询等待最多 30s），空闲时不占 GPU。
 
 ## 验证
 

@@ -19,6 +19,7 @@ public:
 private:
     void recordThread();
     void sendToVllm();
+    bool ensureServer();   // 懒加载: 确保 vLLM 服务运行中
 
     std::string vllmSocket_;
     std::string tempWavPath_;
