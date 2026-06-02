@@ -68,16 +68,24 @@ private:
     static constexpr uint64_t kLongPressUsec = 500 * 1000; // 500ms
 
     // 发送一个假的 CapsLock 按键来还原系统大写锁定状态
-    // CapsLock 在 XKB/硬件层切换，filterAndAccept 无法拦截，
-    // 因此激活/结束时需要反设回去
-    static void revertCapsLock() {
+    // X11/XWayland: CapsLock 在 XKB 层切换, filterAndAccept 无法拦截
+    // Wayland V1: compositor 处理 CapsLock, fcitx5 同样拦不住
+    // Wayland V2: fcitx5 接管键盘, filterAndAccept 就能拦住, 无需此函数
+    void revertCapsLock() {
+        // 方案 1: X11 / XWayland — 用 XTest 发假按键
         auto *display = XOpenDisplay(nullptr);
-        if (!display) return;
-        auto keycode = XKeysymToKeycode(display, XK_Caps_Lock);
-        XTestFakeKeyEvent(display, keycode, True, CurrentTime);
-        XTestFakeKeyEvent(display, keycode, False, CurrentTime);
-        XFlush(display);
-        XCloseDisplay(display);
+        if (display) {
+            auto keycode = XKeysymToKeycode(display, XK_Caps_Lock);
+            XTestFakeKeyEvent(display, keycode, True, CurrentTime);
+            XTestFakeKeyEvent(display, keycode, False, CurrentTime);
+            XFlush(display);
+            XCloseDisplay(display);
+            return;
+        }
+
+        // 方案 2: 原生 Wayland — 清空 fcitx5 内部 XKB 锁定状态
+        // 使用空字符串作为 display 名, fcitx5 会作用于默认 display
+        instance_->clearXkbStateMask("");
     }
 
     fcitx::Instance *instance_;
