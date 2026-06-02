@@ -10,7 +10,7 @@ namespace vinput {
 class Qwen3AsrProvider : public IAsrProvider {
 public:
     explicit Qwen3AsrProvider(
-        const std::string &vllmUrl = "http://127.0.0.1:8000");
+        const std::string &vllmSocket = "");
     ~Qwen3AsrProvider() override;
 
     void start() override;
@@ -20,7 +20,7 @@ private:
     void recordThread();
     void sendToVllm();
 
-    std::string vllmUrl_;
+    std::string vllmSocket_;
     std::string tempWavPath_;
     std::thread recordThread_;
     std::thread sendThread_;

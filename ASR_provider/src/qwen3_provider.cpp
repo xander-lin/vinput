@@ -40,8 +40,17 @@ static size_t curlWriteCb(void *ptr, size_t size, size_t nmemb, void *user) {
     return size * nmemb;
 }
 
-Qwen3AsrProvider::Qwen3AsrProvider(const std::string &vllmUrl)
-    : vllmUrl_(vllmUrl) {
+Qwen3AsrProvider::Qwen3AsrProvider(const std::string &vllmSocket)
+    : vllmSocket_(vllmSocket) {
+    // 默认 socket 路径: $XDG_RUNTIME_DIR/vllm.sock 或 /tmp/vllm-<uid>.sock
+    if (vllmSocket_.empty()) {
+        const char *runtime = getenv("XDG_RUNTIME_DIR");
+        if (runtime) {
+            vllmSocket_ = std::string(runtime) + "/vllm.sock";
+        } else {
+            vllmSocket_ = "/tmp/vllm-" + std::to_string(getuid()) + ".sock";
+        }
+    }
     tempWavPath_ = "/tmp/vinput_qwen3_" + std::to_string(getpid()) + ".wav";
 }
 
@@ -159,11 +168,12 @@ void Qwen3AsrProvider::sendToVllm() {
     }
 
     std::string resp;
-    std::string url = vllmUrl_ + "/v1/chat/completions";
+    std::string url = "http://localhost/v1/chat/completions";
 
     struct curl_slist *hdrs = nullptr;
     hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
 
+    curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, vllmSocket_.c_str());
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)json.size());

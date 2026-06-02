@@ -15,7 +15,7 @@ uv pip install vllm qwen-asr --pre \
 ```bash
 source ~/vllm-env/bin/activate
 vllm serve Qwen/Qwen3-ASR-1.7B \
-    --host 127.0.0.1 --port 8000 \
+    --uds $XDG_RUNTIME_DIR/vllm.sock \
     --gpu-memory-utilization 0.8
 ```
 
@@ -24,7 +24,7 @@ vllm serve Qwen/Qwen3-ASR-1.7B \
 ## 验证
 
 ```bash
-curl -s http://127.0.0.1:8000/v1/models | head -c 200
+curl --unix-socket $XDG_RUNTIME_DIR/vllm.sock -s http://localhost/v1/models | head -c 200
 ```
 
 ## 架构
@@ -34,11 +34,11 @@ fcitx5 → CapsLock 长按 → adapter 激活
   → Qwen3AsrProvider::start()
     → PulseAudio 录音 (16kHz 16bit mono)
   → CapsLock 松开 → stop()
-    → WAV base64 → POST /v1/chat/completions
+    → WAV base64 → POST /tmp/vllm.sock (UDS)
     → vLLM 推理 → JSON response
     → commitString(text)
 ```
 
 ## 配置
 
-在 adapter 配置中可指定 vLLM 地址，默认 `http://127.0.0.1:8000`。
+Unix socket 路径默认 `/tmp/vllm.sock`。
