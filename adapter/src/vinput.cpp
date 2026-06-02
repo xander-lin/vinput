@@ -14,6 +14,11 @@
 #include <fcitx-utils/keysym.h>    // FcitxKey_Caps_Lock 等键值常量
 #include <fcitx-utils/log.h>       // 日志宏 FCITX_INFO/FCITX_DEBUG 等
 
+// X11/XTest: 用于在拦截 CapsLock 后还原系统大写锁定状态
+#include <X11/Xlib.h>
+#include <X11/keysym.h>
+#include <X11/extensions/XTest.h>
+
 // notifications addon 公共 API (跨 addon 调用)
 #include <fcitx-module/notifications/notifications_public.h>
 
@@ -61,6 +66,19 @@ public:
 private:
     static constexpr char confFile[] = "conf/vinput.conf";
     static constexpr uint64_t kLongPressUsec = 500 * 1000; // 500ms
+
+    // 发送一个假的 CapsLock 按键来还原系统大写锁定状态
+    // CapsLock 在 XKB/硬件层切换，filterAndAccept 无法拦截，
+    // 因此激活/结束时需要反设回去
+    static void revertCapsLock() {
+        auto *display = XOpenDisplay(nullptr);
+        if (!display) return;
+        auto keycode = XKeysymToKeycode(display, XK_Caps_Lock);
+        XTestFakeKeyEvent(display, keycode, True, CurrentTime);
+        XTestFakeKeyEvent(display, keycode, False, CurrentTime);
+        XFlush(display);
+        XCloseDisplay(display);
+    }
 
     fcitx::Instance *instance_;
     VinputConfig config_;
@@ -196,6 +214,9 @@ private:
                 std::vector<std::string>{}, 3000, nullptr, nullptr);
 
             asr_->start();
+
+            // CapsLock 已在硬件层切换, 发假按键还原
+            revertCapsLock();
         }
     }
 
