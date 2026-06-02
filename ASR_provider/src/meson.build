@@ -1,5 +1,7 @@
 asr_provider_lib = static_library('asr_provider',
   'asr_provider.h',
+  'qwen3_provider.h',
+  'qwen3_provider.cpp',
   'asr_provider.cpp',
   'mock_provider.h',
   'mock_provider.cpp',
