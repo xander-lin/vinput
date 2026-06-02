@@ -9,19 +9,25 @@ namespace vinput {
 
 class Qwen3AsrProvider : public IAsrProvider {
 public:
-    explicit Qwen3AsrProvider(
-        const std::string &vllmSocket = "");
+    Qwen3AsrProvider();
     ~Qwen3AsrProvider() override;
 
     void start() override;
     void stop() override;
+    void setConfig(const std::string &key, const std::string &value) override;
 
 private:
     void recordThread();
     void sendToVllm();
-    bool ensureServer();   // 懒加载: 确保 vLLM 服务运行中
+    bool ensureServer();
+    bool trySend(const std::string &url, const std::string &udsPath,
+                 const std::string &json, std::string &resp);
 
-    std::string vllmSocket_;
+    // 配置 (由 adapter 注入)
+    std::string udsPath_;       // 空 = 自动: $XDG_RUNTIME_DIR/vllm-<uid>.sock
+    std::string tcpHost_;       // 空 = 禁用 TCP
+    int tcpPort_ = 0;           // 0 = 禁用
+
     std::string tempWavPath_;
     std::thread recordThread_;
     std::thread sendThread_;

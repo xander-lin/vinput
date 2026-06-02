@@ -17,38 +17,26 @@ using AsrErrorCallback = std::function<void(const std::string &error)>;
 using AsrStateCallback = std::function<void(bool active)>;
 
 // IAsrProvider — ASR 语音识别后端抽象接口
-// 每个具体后端（OpenAI Whisper、Azure Speech、本地 Vosk/Whisper 等）实现此接口
-//
-// 生命周期:
-//   1. create(...) → 创建实例
-//   2. setResultCallback / setErrorCallback / setStateCallback → 注册回调
-//   3. start() → 开始录音 & 识别
-//   4. onResult(...) 多次回调 → 中间/最终识别结果
-//   5. stop() → 停止录音 & 识别
-//
 class IAsrProvider {
 public:
     virtual ~IAsrProvider() = default;
 
-    // 开始录音 & 识别
     virtual void start() = 0;
-
-    // 停止录音 & 识别
     virtual void stop() = 0;
 
-    // 注册结果回调（可在 start 前后调用）
-    void setResultCallback(AsrResultCallback cb) { onResult_ = std::move(cb); }
+    // 设置后端配置 (在 start 前调用)
+    // 键值对: "uds"=socket路径, "host"=TCP地址, "port"=TCP端口
+    virtual void setConfig(const std::string &key, const std::string &value) {}
 
-    // 注册错误回调
+    void setResultCallback(AsrResultCallback cb) { onResult_ = std::move(cb); }
     void setErrorCallback(AsrErrorCallback cb) { onError_ = std::move(cb); }
 
-    // 注册状态回调
     void setStateCallback(AsrStateCallback cb) { onState_ = std::move(cb); }
 
 protected:
-    AsrResultCallback onResult_;  // 子类在识别到文本时调用
-    AsrErrorCallback  onError_;   // 子类在出错时调用
-    AsrStateCallback  onState_;   // 子类在录音开始/停止时调用
+    AsrResultCallback onResult_;
+    AsrErrorCallback  onError_;
+    AsrStateCallback  onState_;
 };
 
 // AsrProviderFactory — ASR 后端的工厂基类

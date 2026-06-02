@@ -41,20 +41,35 @@ static size_t curlWriteCb(void *ptr, size_t size, size_t nmemb, void *user) {
     return size * nmemb;
 }
 
-Qwen3AsrProvider::Qwen3AsrProvider(const std::string &vllmSocket)
-    : vllmSocket_(vllmSocket) {
-    if (vllmSocket_.empty()) {
-        const char *runtime = getenv("XDG_RUNTIME_DIR");
-        auto base = runtime ? std::string(runtime) : "/tmp";
-        vllmSocket_ = base + "/vllm-" + std::to_string(getuid()) + ".sock";
-    }
-    fprintf(stderr, "Vinput: vLLM socket = %s\n", vllmSocket_.c_str());
+static std::string defaultUdsPath() {
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    auto base = runtime ? std::string(runtime) : "/tmp";
+    return base + "/vllm-" + std::to_string(getuid()) + ".sock";
+}
+
+Qwen3AsrProvider::Qwen3AsrProvider() {
     tempWavPath_ = "/tmp/vinput_qwen3_" + std::to_string(getpid()) + ".wav";
 }
 
 Qwen3AsrProvider::~Qwen3AsrProvider() {
     stop();
     unlink(tempWavPath_.c_str());
+}
+
+void Qwen3AsrProvider::setConfig(const std::string &key,
+                                 const std::string &value) {
+    if (key == "uds") {
+        udsPath_ = value;
+        if (!udsPath_.empty())
+            fprintf(stderr, "Vinput: uds = %s\n", udsPath_.c_str());
+    } else if (key == "host") {
+        tcpHost_ = value;
+    } else if (key == "port") {
+        tcpPort_ = std::stoi(value);
+        if (tcpPort_ > 0)
+            fprintf(stderr, "Vinput: tcp = %s:%d\n",
+                    tcpHost_.c_str(), tcpPort_);
+    }
 }
 
 void Qwen3AsrProvider::start() {
@@ -113,52 +128,70 @@ void Qwen3AsrProvider::recordThread() {
     fclose(f);
     pa_simple_free(pa);
 
-    fprintf(stderr, "Vinput: recorded %d bytes to %s\n",
-            totalBytes, tempWavPath_.c_str());
+    fprintf(stderr, "Vinput: recorded %d bytes\n", totalBytes);
 }
 
 bool Qwen3AsrProvider::ensureServer() {
-    // 检查 socket 是否已存在
+    auto uds = udsPath_.empty() ? defaultUdsPath() : udsPath_;
     struct stat st;
-    if (stat(vllmSocket_.c_str(), &st) == 0) return true;
+    if (stat(uds.c_str(), &st) == 0) return true;
 
-    // 懒加载: 启动 systemd user service
     fprintf(stderr, "Vinput: starting vLLM service...\n");
     system("systemctl --user start vllm-qwen3 2>/dev/null");
 
-    // 轮询等待 socket 出现 (最多 30s)
     for (int i = 0; i < 60; i++) {
-        usleep(500000); // 500ms
-        if (stat(vllmSocket_.c_str(), &st) == 0) {
+        usleep(500000);
+        if (stat(uds.c_str(), &st) == 0) {
             fprintf(stderr, "Vinput: vLLM ready after %dms\n", (i + 1) * 500);
             return true;
         }
     }
-    fprintf(stderr, "Vinput: vLLM startup timeout\n");
     return false;
 }
 
-void Qwen3AsrProvider::sendToVllm() {
-    ensureServer();
-    FILE *f = fopen(tempWavPath_.c_str(), "rb");
-    if (!f) {
-        if (onError_) onError_("no audio file");
-        return;
+// 发送 HTTP 请求，返回是否成功
+bool Qwen3AsrProvider::trySend(const std::string &url,
+                               const std::string &udsPath,
+                               const std::string &json,
+                               std::string &resp) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return false;
+
+    struct curl_slist *hdrs = nullptr;
+    hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)json.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteCb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    if (!udsPath.empty()) {
+        curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, udsPath.c_str());
     }
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(curl);
+
+    return res == CURLE_OK;
+}
+
+void Qwen3AsrProvider::sendToVllm() {
+    FILE *f = fopen(tempWavPath_.c_str(), "rb");
+    if (!f) { if (onError_) onError_("no audio file"); return; }
     fseek(f, 0, SEEK_END);
     long fileSize = ftell(f);
     rewind(f);
-    if (fileSize <= 44) {
-        fclose(f);
-        if (onError_) onError_("empty recording");
-        return;
-    }
+    if (fileSize <= 44) { fclose(f); if (onError_) onError_("empty"); return; }
 
     std::vector<uint8_t> wavData(fileSize);
     fread(wavData.data(), 1, fileSize, f);
     fclose(f);
 
-    // Base64 encode
+    // Base64
     static const char tbl[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string b64;
@@ -179,60 +212,39 @@ void Qwen3AsrProvider::sendToVllm() {
     json += b64;
     json += R"("}}]}]})";
 
-    fprintf(stderr, "Vinput: sending %ld bytes audio to vLLM...\n", fileSize);
-
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        if (onError_) onError_("curl init failed");
-        return;
-    }
-
     std::string resp;
-    std::string url = "http://localhost/v1/chat/completions";
+    bool ok = false;
 
-    struct curl_slist *hdrs = nullptr;
-    hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
+    // 1) 尝试 UDS
+    auto uds = udsPath_.empty() ? defaultUdsPath() : udsPath_;
+    ensureServer(); // 懒加载
+    fprintf(stderr, "Vinput: trying UDS %s\n", uds.c_str());
+    ok = trySend("http://localhost/v1/chat/completions", uds, json, resp);
+    if (!ok) {
+        // 2) 回退 TCP
+        if (tcpPort_ > 0) {
+            auto tcpUrl = "http://" + tcpHost_ + ":" +
+                          std::to_string(tcpPort_) + "/v1/chat/completions";
+            fprintf(stderr, "Vinput: UDS failed, trying TCP %s\n",
+                    tcpUrl.c_str());
+            ok = trySend(tcpUrl, "", json, resp);
+        }
+    }
 
-    curl_easy_setopt(curl, CURLOPT_UNIX_SOCKET_PATH, vllmSocket_.c_str());
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)json.size());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curlWriteCb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(hdrs);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        if (onError_) onError_(
-            std::string("vLLM error: ") + curl_easy_strerror(res));
+    if (!ok) {
+        if (onError_) onError_("vLLM: UDS and TCP both unreachable");
         return;
     }
 
-    // Parse {"choices":[{"message":{"content":"..."}}]}
     auto p = resp.find("\"content\"");
-    if (p == std::string::npos) {
-        if (onError_) onError_("vLLM: no content");
-        return;
-    }
+    if (p == std::string::npos) { if (onError_) onError_("vLLM: no content"); return; }
     p = resp.find('"', p + 10);
-    if (p == std::string::npos) {
-        if (onError_) onError_("vLLM: bad response");
-        return;
-    }
+    if (p == std::string::npos) { if (onError_) onError_("vLLM: bad resp"); return; }
     p++;
     auto e = resp.find('"', p);
-    if (e == std::string::npos) {
-        if (onError_) onError_("vLLM: bad response");
-        return;
-    }
+    if (e == std::string::npos) { if (onError_) onError_("vLLM: bad resp"); return; }
 
     std::string text = resp.substr(p, e - p);
-
-    // Strip language tags like <|zh|>
     while (!text.empty() && text[0] == '<') {
         auto tagEnd = text.find("|>");
         if (tagEnd == std::string::npos) break;

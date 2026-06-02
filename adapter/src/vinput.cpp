@@ -33,6 +33,13 @@ FCITX_CONFIGURATION(
     VinputConfig,
     fcitx::Option<std::string> defaultProvider{
         this, "DefaultProvider", _("Default ASR Provider"), "mock"};
+    fcitx::Option<std::string> vllmUds{
+        this, "VllmUds", _("vLLM Unix Socket"), ""};
+    fcitx::Option<std::string> vllmHost{
+        this, "VllmHost", _("vLLM Host"), "127.0.0.1"};
+    fcitx::Option<int, fcitx::IntConstrain> vllmPort{
+        this, "VllmPort", _("vLLM Port"), 0,
+        fcitx::IntConstrain(0, 65535)};
 );
 
 // VinputAddon — Vinput 语音输入插件的 addon 主体
@@ -198,6 +205,7 @@ private:
         asr_ = vinput::AsrProviderRegistry::instance().create(id);
 
         if (asr_) {
+            applyAsrConfig();
             setupAsrCallbacks();
             asr_->start();
         }
@@ -244,6 +252,7 @@ private:
             list[providerIndex_].first);
 
         if (asr_) {
+            applyAsrConfig();
             setupAsrCallbacks();
 
             notifications()->call<fcitx::INotifications::sendNotification>(
@@ -255,7 +264,7 @@ private:
         }
     }
 
-    // 注册 ASR 回调
+        // 注册 ASR 回调
     void setupAsrCallbacks() {
         if (!asr_) return;
         asr_->setResultCallback([this](const std::string &text, bool isFinal) {
@@ -267,6 +276,14 @@ private:
         asr_->setStateCallback([](bool active) {
             FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
         });
+    }
+
+    // 注入配置到 ASR 后端
+    void applyAsrConfig() {
+        if (!asr_) return;
+        asr_->setConfig("uds", config_.vllmUds.value());
+        asr_->setConfig("host", config_.vllmHost.value());
+        asr_->setConfig("port", std::to_string(config_.vllmPort.value()));
     }
 
     // 松键后结束
