@@ -81,12 +81,17 @@ private:
         if (fd >= 0) {
             ioctl(fd, UI_SET_EVBIT, EV_KEY);
             ioctl(fd, UI_SET_KEYBIT, KEY_CAPSLOCK);
+            ioctl(fd, UI_SET_EVBIT, EV_LED);
+            ioctl(fd, UI_SET_LEDBIT, LED_CAPSL);
 
             struct uinput_setup usetup = {};
             strcpy(usetup.name, "Vinput CapsLock revert");
             usetup.id.bustype = BUS_VIRTUAL;
             ioctl(fd, UI_DEV_SETUP, &usetup);
             ioctl(fd, UI_DEV_CREATE);
+
+            // compositor 需要时间识别虚设备, 稍等再发键
+            usleep(10000); // 10ms
 
             struct input_event ev = {};
             ev.type = EV_KEY;
@@ -99,6 +104,9 @@ private:
             ev.code = SYN_REPORT;
             ev.value = 0;
             write(fd, &ev, sizeof(ev));
+
+            // compositor 处理完事件后再销毁
+            usleep(50000); // 50ms
 
             ioctl(fd, UI_DEV_DESTROY);
             close(fd);
