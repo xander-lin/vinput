@@ -7,4 +7,4 @@ asr_provider_lib = static_library('asr_provider',
 
 asr_provider_dep = declare_dependency(
   include_directories: include_directories('.'),
-  link_with: asr_provider_lib)
+  link_whole: asr_provider_lib)

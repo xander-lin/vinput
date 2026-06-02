@@ -52,6 +52,7 @@
 - `AsrProviderRegistry`: 全局单例注册表，adapter 通过它发现和创建后端
 - MockAsrProvider: 测试用，`start()` 立即同步返回 "你好世界"
 - **自动注册**: 各 provider .cpp 中用 static 初始化 lambda 调用 `registerFactory()`，编译链接即自动注册，无需手动在 adapter 中注册
+- **静态库需要 `link_whole`**: 用 `link_with` 会导致静态初始化器被链接器丢弃，必须改 `link_whole` 才能保留全局 static 对象
 - **运行时切换**: 激活后按 ←/h（上一）→/l（下一）切换 ASR 后端，自动保存为默认
 - **配置系统**: 使用 `FCITX_CONFIGURATION` 宏 + `readAsIni/safeSaveAsIni` 持久化默认后端
   - 头文件: `<fcitx-config/configuration.h>`, `<fcitx-config/iniparser.h>`, `<fcitx-utils/i18n.h>`
