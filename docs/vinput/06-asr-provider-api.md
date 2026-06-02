@@ -80,9 +80,20 @@ auto asr = reg.create("openai-whisper");
 1. 在 `ASR_provider/src/` 下创建 `xxx_provider.h` 和 `xxx_provider.cpp`
 2. 继承 `IAsrProvider` 实现 `start()` / `stop()`
 3. 继承 `IAsrProviderFactory` 提供 `id()` / `name()` / `create()`
-4. 在 adapter 中注册工厂
+4. **在 .cpp 末尾加静态注册代码，编译后自动注册：**
 
-### 示例骨架
+```cpp
+// 静态初始化：程序启动时自动注册到全局 Registry
+static bool _registered = []() {
+    vinput::AsrProviderRegistry::instance().registerFactory(
+        std::make_unique<MyProviderFactory>());
+    return true;
+}();
+```
+
+无需修改 adapter 代码，编译链接即可被自动发现。
+
+## 示例骨架
 
 ```cpp
 #include "asr_provider.h"
@@ -96,7 +107,6 @@ class MyProvider : public vinput::IAsrProvider {
         // 4. 出错调用 onError_(msg)
     }
     void stop() override {
-        // 停止录音 & 关闭连接
         if (onState_) onState_(false);
     }
 };
@@ -108,7 +118,25 @@ class MyProviderFactory : public vinput::IAsrProviderFactory {
         return std::make_unique<MyProvider>();
     }
 };
+
+// 自动注册
+static bool _myRegistered = []() {
+    vinput::AsrProviderRegistry::instance().registerFactory(
+        std::make_unique<MyProviderFactory>());
+    return true;
+}();
 ```
+
+## 运行时切换
+
+语音输入激活后（CapsLock 长按中），按以下键切换后端：
+
+| 按键 | 操作 |
+|------|------|
+| ← / h | 上一个后端 |
+| → / l | 下一个后端 |
+
+切换时会显示通知（后端名 + 序号），同时自动保存为默认配置。
 
 ## adapter 集成方式
 

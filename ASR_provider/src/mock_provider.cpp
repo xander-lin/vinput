@@ -2,16 +2,21 @@
 
 namespace vinput {
 
+// 自动注册: 程序启动时静态初始化, 将 Mock 后端注册到全局 Registry
+static bool _mockRegistered = []() {
+    AsrProviderRegistry::instance().registerFactory(
+        std::make_unique<MockAsrProviderFactory>());
+    return true;
+}();
+
 void MockAsrProvider::start() {
     if (running_) return;
     running_ = true;
 
     if (onState_) onState_(true);
 
-    // 模拟: 立即返回一段识别文本
-    // 真实实现中，这里会启动录音线程并流式调用 ASR API
     if (onResult_) {
-        onResult_("你好世界", true); // isFinal=true
+        onResult_("你好世界", true);
     }
 }
 

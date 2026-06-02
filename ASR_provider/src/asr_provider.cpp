@@ -23,7 +23,7 @@ AsrProviderRegistry::listFactories() const {
 
 std::unique_ptr<IAsrProvider>
 AsrProviderRegistry::create(const std::string &id) const {
-    for (auto &f : factories_) {
+    for (auto &f : factories_) { //遍历算法足够了
         if (f->id() == id) {
             return f->create();
         }

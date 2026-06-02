@@ -30,9 +30,10 @@
 
 ### 定时器
 - `instance_->eventLoop().addTimeEvent(CLOCK_MONOTONIC, usec, accuracy, callback)` 创建定时器
+- **usec 是绝对时间（微秒），不是相对偏移**。需传入 `fcitx::now(CLOCK_MONOTONIC) + delay`
+- `fcitx::now(clockid)` 获取当前时间：头文件 `<fcitx-utils/eventloopinterface.h>`
 - 返回 `std::unique_ptr<EventSourceTime>`，reset 即取消
 - callback 返回 false 表示一次性定时器
-- 头文件: `<fcitx-utils/event.h>`
 
 ### notifications addon
 - 依赖声明: `find_package(Fcitx5Module REQUIRED)` / `dependency('Fcitx5Module')`
@@ -50,7 +51,10 @@
 - `IAsrProviderFactory`: 工厂, `id()` / `name()` / `create()`
 - `AsrProviderRegistry`: 全局单例注册表，adapter 通过它发现和创建后端
 - MockAsrProvider: 测试用，`start()` 立即同步返回 "你好世界"
-- 后续真实后端（OpenAI Whisper、Azure Speech 等）通过 `FCITX_ADDON_DEPENDENCY_LOADER` 或直接链接接入
+- **自动注册**: 各 provider .cpp 中用 static 初始化 lambda 调用 `registerFactory()`，编译链接即自动注册，无需手动在 adapter 中注册
+- **运行时切换**: 激活后按 ←/h（上一）→/l（下一）切换 ASR 后端，自动保存为默认
+- **配置系统**: 使用 `FCITX_CONFIGURATION` 宏 + `readAsIni/safeSaveAsIni` 持久化默认后端
+  - 头文件: `<fcitx-config/configuration.h>`, `<fcitx-config/iniparser.h>`, `<fcitx-utils/i18n.h>`
 
 ### 常见 addon 参考
 - clipboard: `fcitx5/src/modules/clipboard/` (Module 类型)

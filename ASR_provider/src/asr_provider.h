@@ -67,7 +67,6 @@ public:
     // 创建实例，config 传递后端专属参数（如 API key、模型名等）
     virtual std::unique_ptr<IAsrProvider> create() = 0;
 };
-
 // AsrProviderRegistry — 全局 ASR 后端注册表
 // 在程序启动时由各后端实现调用 registerFactory() 注册自己
 // adapter 通过 listFactories() 获取可用后端列表，通过 create() 实例化

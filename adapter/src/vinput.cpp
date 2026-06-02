@@ -5,7 +5,11 @@
 #include <fcitx/instance.h>        // Instance, fcitx 服务器实例
 #include <fcitx/event.h>           // KeyEvent
 #include <fcitx/inputcontext.h>    // InputContext
+#include <fcitx-config/configuration.h>   // FCITX_CONFIGURATION
+#include <fcitx-config/iniparser.h>       // readAsIni, safeSaveAsIni
+#include <fcitx-utils/i18n.h>             // _() translation macro
 #include <fcitx-utils/event.h>     // EventLoop, addTimeEvent
+#include <fcitx-utils/eventloopinterface.h> // now()
 #include <fcitx-utils/key.h>       // Key
 #include <fcitx-utils/keysym.h>    // FcitxKey_Caps_Lock 等键值常量
 #include <fcitx-utils/log.h>       // 日志宏 FCITX_INFO/FCITX_DEBUG 等
@@ -15,21 +19,24 @@
 
 // Vinput ASR provider 接口
 #include "asr_provider.h"
-#include "mock_provider.h"
+#include "mock_provider.h"         // 确保 Mock 后端被链接并自动注册
+
+// 配置: 定义 addon 的可配置选项
+FCITX_CONFIGURATION(
+    VinputConfig,
+    fcitx::Option<std::string> defaultProvider{
+        this, "DefaultProvider", _("Default ASR Provider"), "mock"};
+);
 
 // VinputAddon — Vinput 语音输入插件的 addon 主体
 // 继承 AddonInstance, fcitx5 加载 addon 时实例化此类
 class VinputAddon : public fcitx::AddonInstance {
 public:
     VinputAddon(fcitx::Instance *instance) : instance_(instance) {
+        reloadConfig();
         FCITX_INFO() << "Vinput addon loaded";
 
-        // 注册 Mock ASR 后端到 Registry（后续替换为真实后端）
-        vinput::AsrProviderRegistry::instance().registerFactory(
-            std::make_unique<vinput::MockAsrProviderFactory>());
-
         // 在 PreInputMethod 阶段监听键盘事件 (早于输入法引擎)
-        // 用于拦截 CapsLock 长按触发语音输入
         keyWatcher_ = instance_->watchEvent(
             fcitx::EventType::InputContextKeyEvent,
             fcitx::EventWatcherPhase::PreInputMethod,
@@ -39,60 +46,161 @@ public:
             });
     }
 
+    // 配置读写
+    void reloadConfig() override {
+        readAsIni(config_, confFile);
+    }
+    const fcitx::Configuration *getConfig() const override {
+        return &config_;
+    }
+    void setConfig(const fcitx::RawConfig &config) override {
+        config_.load(config, true);
+        safeSaveAsIni(config_, confFile);
+    }
+
 private:
-    // 长按阈值 (微秒)
+    static constexpr char confFile[] = "conf/vinput.conf";
     static constexpr uint64_t kLongPressUsec = 500 * 1000; // 500ms
 
     fcitx::Instance *instance_;
+    VinputConfig config_;
     std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>> keyWatcher_;
 
-    // 运行时依赖: notifications addon, 首次调用时自动加载
+    // 运行时依赖: notifications addon
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
 
     // 状态
-    bool active_ = false;                              // 语音输入是否激活
-    std::unique_ptr<fcitx::EventSourceTime> timer_;    // 长按定时器
-    std::unique_ptr<vinput::IAsrProvider> asr_;        // ASR 后端实例
-    fcitx::InputContext *currentIC_ = nullptr;         // 当前输入上下文
+    bool active_ = false;
+    std::unique_ptr<fcitx::EventSourceTime> timer_;
+    std::unique_ptr<vinput::IAsrProvider> asr_;
+    fcitx::InputContext *currentIC_ = nullptr;
+    int providerIndex_ = 0; // 当前使用的 ASR 后端在列表中的索引
 
     // 键盘事件回调
     void onKeyEvent(fcitx::KeyEvent &keyEvent) {
-        if (keyEvent.key().sym() != FcitxKey_Caps_Lock) return;
+        if (!active_ && keyEvent.key().sym() != FcitxKey_Caps_Lock) return;
 
         if (keyEvent.isRelease()) {
-            if (active_) {
-                onDeactivate();
-            } else {
-                timer_.reset();
+            if (keyEvent.key().sym() == FcitxKey_Caps_Lock) {
+                if (active_) {
+                    onDeactivate();
+                } else {
+                    timer_.reset();
+                }
+                keyEvent.filterAndAccept();
             }
-            keyEvent.filterAndAccept();
-        } else {
+            return;
+        }
+
+        // ---- 按下事件 ----
+        if (keyEvent.key().sym() == FcitxKey_Caps_Lock) {
             if (timer_ || active_) return;
             currentIC_ = keyEvent.inputContext();
             timer_ = instance_->eventLoop().addTimeEvent(
-                CLOCK_MONOTONIC, kLongPressUsec, 0,
-                [this](fcitx::EventSourceTime *source, uint64_t usec) {
+                CLOCK_MONOTONIC,
+                fcitx::now(CLOCK_MONOTONIC) + kLongPressUsec, 0,
+                [this](fcitx::EventSourceTime *, uint64_t) {
                     onActivate();
                     return false;
                 });
             keyEvent.filterAndAccept();
+            return;
+        }
+
+        // 激活状态下, 处理左右方向键 / h/l 切换 ASR 后端
+        if (active_) {
+            if (switchProvider(keyEvent)) return;
         }
     }
 
-    // 长按 500ms 后触发: 创建 ASR 后端并开始录音
+    // 切换 ASR 后端
+    bool switchProvider(fcitx::KeyEvent &keyEvent) {
+        int sym = keyEvent.key().sym();
+
+        int direction = 0;
+        if (sym == FcitxKey_Left || sym == FcitxKey_h) {
+            direction = -1;
+        } else if (sym == FcitxKey_Right || sym == FcitxKey_l) {
+            direction = 1;
+        } else {
+            return false;
+        }
+
+        auto list = vinput::AsrProviderRegistry::instance().listFactories();
+        if (list.empty()) return false;
+
+        providerIndex_ = (providerIndex_ + direction + (int)list.size()) % (int)list.size();
+
+        // 停止当前后端, 创建新后端
+        if (asr_) {
+            asr_->stop();
+            asr_.reset();
+        }
+
+        const auto &[id, name] = list[providerIndex_];
+        FCITX_INFO() << "Vinput switch ASR provider: " << name;
+        asr_ = vinput::AsrProviderRegistry::instance().create(id);
+
+        if (asr_) {
+            setupAsrCallbacks();
+            asr_->start();
+        }
+
+        // 保存为默认
+        config_.defaultProvider.setValue(id);
+        safeSaveAsIni(config_, confFile);
+
+        // 通知用户当前后端
+        auto total = (int)list.size();
+        auto msg = name + " (" + std::to_string(providerIndex_ + 1)
+                   + "/" + std::to_string(total) + ")";
+        notifications()->call<fcitx::INotifications::sendNotification>(
+            "fcitx5-vinput", 0, "fcitx-vinput",
+            "Vinput", msg,
+            std::vector<std::string>{}, 2000, nullptr, nullptr);
+
+        keyEvent.filterAndAccept();
+        return true;
+    }
+
+    // 长按 500ms 后触发
     void onActivate() {
         timer_.reset();
         active_ = true;
         FCITX_INFO() << "Vinput activated";
 
-        // 创建 ASR 后端 (后续根据配置选择)
-        asr_ = vinput::AsrProviderRegistry::instance().create("mock");
-        if (!asr_) {
-            FCITX_INFO() << "Vinput: no ASR provider available";
+        auto list = vinput::AsrProviderRegistry::instance().listFactories();
+        if (list.empty()) {
+            FCITX_INFO() << "Vinput: no ASR provider registered";
             return;
         }
 
-        // 注册 ASR 回调
+        // 根据配置中的默认后端 ID 查找索引
+        const auto &defaultId = config_.defaultProvider.value();
+        for (int i = 0; i < (int)list.size(); i++) {
+            if (list[i].first == defaultId) {
+                providerIndex_ = i;
+                break;
+            }
+        }
+
+        asr_ = vinput::AsrProviderRegistry::instance().create(
+            list[providerIndex_].first);
+
+        if (asr_) {
+            setupAsrCallbacks();
+            asr_->start();
+        }
+
+        notifications()->call<fcitx::INotifications::sendNotification>(
+            "fcitx5-vinput", 0, "fcitx-vinput",
+            "Vinput", "语音输入已激活",
+            std::vector<std::string>{}, 3000, nullptr, nullptr);
+    }
+
+    // 注册 ASR 回调
+    void setupAsrCallbacks() {
+        if (!asr_) return;
         asr_->setResultCallback([this](const std::string &text, bool isFinal) {
             onAsrResult(text, isFinal);
         });
@@ -102,15 +210,6 @@ private:
         asr_->setStateCallback([](bool active) {
             FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
         });
-
-        // 开始录音 & 识别
-        asr_->start();
-
-        // 发送 DBus 通知
-        notifications()->call<fcitx::INotifications::sendNotification>(
-            "fcitx5-vinput", 0, "fcitx-vinput",
-            "Vinput", "语音输入已激活",
-            std::vector<std::string>{}, 3000, nullptr, nullptr);
     }
 
     // 松键后结束
@@ -118,14 +217,12 @@ private:
         active_ = false;
         FCITX_INFO() << "Vinput deactivated";
 
-        // 停止 ASR
         if (asr_) {
             asr_->stop();
             asr_.reset();
         }
         currentIC_ = nullptr;
 
-        // 发送 DBus 通知
         notifications()->call<fcitx::INotifications::sendNotification>(
             "fcitx5-vinput", 0, "fcitx-vinput",
             "Vinput", "语音输入已结束",
@@ -136,8 +233,6 @@ private:
     void onAsrResult(const std::string &text, bool isFinal) {
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
-
-        // 最终结果: 提交文本到当前应用
         if (isFinal && currentIC_) {
             currentIC_->commitString(text);
             currentIC_->updateUserInterface(
@@ -152,13 +247,10 @@ private:
 };
 
 // VinputFactory — Vinput 插件的工厂类
-// fcitx5 通过 FCITX_ADDON_FACTORY 宏找到此类, 调用 create() 创建 VinputAddon
 class VinputFactory : public fcitx::AddonFactory {
     fcitx::AddonInstance *create(fcitx::AddonManager *manager) override {
         return new VinputAddon(manager->instance());
     }
 };
 
-// 将 VinputFactory 注册为 fcitx5 addon 入口
-// fcitx5 加载共享库时查找此符号, 据此创建 addon 实例
 FCITX_ADDON_FACTORY(VinputFactory);
