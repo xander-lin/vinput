@@ -190,12 +190,12 @@ private:
         if (asr_) {
             setupAsrCallbacks();
             asr_->start();
-        }
 
-        notifications()->call<fcitx::INotifications::sendNotification>(
-            "fcitx5-vinput", 0, "fcitx-vinput",
-            "Vinput", "语音输入已激活",
-            std::vector<std::string>{}, 3000, nullptr, nullptr);
+            notifications()->call<fcitx::INotifications::sendNotification>(
+                "fcitx5-vinput", 0, "fcitx-vinput",
+                "Vinput", "语音输入已激活",
+                std::vector<std::string>{}, 3000, nullptr, nullptr);
+        }
     }
 
     // 注册 ASR 回调
