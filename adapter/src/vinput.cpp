@@ -227,9 +227,6 @@ private:
                 std::vector<std::string>{}, 3000, nullptr, nullptr);
 
             asr_->start();
-
-            // CapsLock 已在硬件层切换, 发假按键还原
-            revertCapsLock();
         }
     }
 
@@ -262,6 +259,9 @@ private:
             "fcitx5-vinput", 0, "fcitx-vinput",
             "Vinput", "语音输入已结束",
             std::vector<std::string>{}, 3000, nullptr, nullptr);
+
+        // 松键后还原 CapsLock (按下时硬件层已切换, 现在补一个假按键还原)
+        revertCapsLock();
     }
 
     // ASR 识别结果回调
