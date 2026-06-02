@@ -14,10 +14,11 @@ uv pip install vllm qwen-asr --pre \
 
 ```bash
 source ~/vllm-env/bin/activate
+mkdir -p ~/.local/share/vinput/models
+
 # ModelScope (国内)
-modelscope download --model Qwen/Qwen3-ASR-1.7B --local_dir ~/models/Qwen3-ASR-1.7B
-# 或 HuggingFace
-huggingface-cli download Qwen/Qwen3-ASR-1.7B --local-dir ~/models/Qwen3-ASR-1.7B
+modelscope download --model Qwen/Qwen3-ASR-1.7B \
+    --local_dir ~/.local/share/vinput/models/Qwen3-ASR-1.7B
 ```
 
 ## 启动 vLLM 服务
@@ -25,7 +26,7 @@ huggingface-cli download Qwen/Qwen3-ASR-1.7B --local-dir ~/models/Qwen3-ASR-1.7B
 ```bash
 source ~/vllm-env/bin/activate
 SOCK="$XDG_RUNTIME_DIR/vllm-$(id -u).sock"
-vllm serve ~/models/Qwen3-ASR-1.7B \
+vllm serve ~/.local/share/vinput/models/Qwen3-ASR-1.7B \
     --uds "$SOCK" \
     --gpu-memory-utilization 0.8
 ```
