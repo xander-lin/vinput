@@ -28,7 +28,7 @@ ZipformerAsrProvider::~ZipformerAsrProvider() {
     recording_ = false;
     if (recordThread_.joinable()) recordThread_.join();
     if (recogThread_.joinable()) recogThread_.detach();
-    delete static_cast<sherpa_onnx::cxx::OnlineRecognizer *>(recognizer_);
+    // recognizer_ is static, don't delete
     unlink(tempWavPath_.c_str());
 }
 
@@ -40,7 +40,9 @@ void ZipformerAsrProvider::setConfig(const std::string &key,
 void ZipformerAsrProvider::start() {
     if (recording_) return;
 
-    if (!recognizer_) {
+    // 模型只加载一次 (static, 所有实例共享)
+    static void *sharedRecognizer = nullptr;
+    if (!sharedRecognizer) {
         auto dir = expandPath(modelDir_);
 
         sherpa_onnx::cxx::OnlineRecognizerConfig config;
@@ -51,11 +53,11 @@ void ZipformerAsrProvider::start() {
         config.model_config.num_threads = 4;
         config.model_config.provider = "cpu";
 
-        auto *rec = new sherpa_onnx::cxx::OnlineRecognizer(
+        sharedRecognizer = new sherpa_onnx::cxx::OnlineRecognizer(
             sherpa_onnx::cxx::OnlineRecognizer::Create(config));
-        recognizer_ = rec;
         fprintf(stderr, "Vinput: Zipformer model loaded\n");
     }
+    recognizer_ = sharedRecognizer;
 
     recording_ = true;
     if (onState_) onState_(true);
