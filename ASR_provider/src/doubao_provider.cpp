@@ -194,6 +194,7 @@ bool DoubaoAsrProvider::wsRecvFrame(std::string &out) {
 
 bool DoubaoAsrProvider::parseResponse(const std::string &raw,
                                        std::string &text, bool &definite) {
+    definite = false;
     // raw 是二进制帧: header(4) + sequence(4) + payload_size(4) + payload
     if (raw.size() < 12) return false;
     uint8_t msgType = (raw[1] >> 4) & 0x0F;
@@ -248,7 +249,7 @@ void DoubaoAsrProvider::start() {
     std::thread([this]() {
         std::string raw, text;
         bool definite = false, finalSent = false;
-        int sentCount = 0, recvCount = 0;
+        int sentCount = 0, recvCount = 0, timeoutCount = 0;
 
         while (!definite) {
             // 1. 发送
@@ -287,8 +288,7 @@ void DoubaoAsrProvider::start() {
 
             // 发完最后一帧后等 10 秒超时
             if (finalSent && !definite) {
-                static int waitCount = 0;
-                if (++waitCount > 200) {  // 10s timeout
+                if (++timeoutCount > 200) {  // 10s timeout
                     fprintf(stderr, "Vinput Doubao: timeout waiting for definite\n");
                     break;
                 }

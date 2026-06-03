@@ -197,7 +197,7 @@ private:
     fcitx::InputContext *currentIC_ = nullptr;
     fcitx::ICUUID currentUuid_ = {};  // 用于 deactivate 后仍能查找 IC
     int providerIndex_ = 0;
-    size_t lastCommittedSize_ = 0; // Doubao 增量追踪
+    std::string lastCommittedText_;  // Doubao 全文本追踪, 用于计算 diff
 
     // 键盘事件回调
     void onKeyEvent(fcitx::KeyEvent &keyEvent) {
@@ -254,7 +254,7 @@ private:
         if (list.empty()) return false;
 
         providerIndex_ = (providerIndex_ + direction + (int)list.size()) % (int)list.size();
-        lastCommittedSize_ = 0;
+        lastCommittedText_.clear();
         const auto &[nextId, nextName] = list[providerIndex_];
 
         // 通知用户即将切换到哪个后端 (在实际停止/创建之前)
@@ -296,7 +296,7 @@ private:
     void onActivate() {
         timer_.reset();
         active_ = true;
-        lastCommittedSize_ = 0;  // 每次激活重置增量追踪
+        lastCommittedText_.clear();
         FCITX_INFO() << "Vinput activated";
 
         auto list = vinput::AsrProviderRegistry::instance().listFactories();
@@ -368,13 +368,15 @@ private:
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
 
-        // Doubao 每次返回完整文本, 只 commit 新增部分
+        // Doubao 每次返回完整文本, 用 common-prefix 算 diff (处理标点修订)
         std::string diff;
-        if (text.size() > lastCommittedSize_) {
-            diff = text.substr(lastCommittedSize_);
-            lastCommittedSize_ = text.size();
-        }
-        if (isFinal) lastCommittedSize_ = 0;
+        size_t common = 0;
+        while (common < lastCommittedText_.size() && common < text.size()
+               && lastCommittedText_[common] == text[common])
+            common++;
+        diff = text.substr(common);
+        lastCommittedText_ = text;
+        if (isFinal) lastCommittedText_.clear();
 
         if (diff.empty()) return;
 
