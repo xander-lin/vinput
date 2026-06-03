@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cmath>
 #include <ctime>
+#include <chrono>
 #include <ebur128.h>
 #include <string>
 #include <vector>
@@ -32,11 +33,13 @@ ZipformerAsrProvider::~ZipformerAsrProvider() {
 
 void ZipformerAsrProvider::setConfig(const std::string &key,
                                       const std::string &value) {
-    if (key == "model_dir") modelDir_ = value;
+    if (key == "model_dir") {
+        modelDir_ = value;
+    }
 }
 
 void ZipformerAsrProvider::recordLoop() {
-    using Clock = std::chrono::steady_clock;
+
 
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
@@ -44,6 +47,7 @@ void ZipformerAsrProvider::recordLoop() {
     ss.channels = 1;
 
     int error = 0;
+    auto t0 = std::chrono::steady_clock::now();
     pa_simple *pa = pa_simple_new(nullptr, "vinput-zip", PA_STREAM_RECORD,
                                   nullptr, "voice", &ss, nullptr, nullptr, &error);
     if (!pa) {
@@ -51,39 +55,31 @@ void ZipformerAsrProvider::recordLoop() {
         if (onError_) onError_("Zipformer: microphone open failed");
         return;
     }
+    auto tPaOpen = std::chrono::steady_clock::now();
 
-    // --- 录音阶段 ---
-    uint8_t buf[4096];
-    recordStart_ = Clock::now();
+    // 64K 缓冲区 ≈ 2s 音频, 一次读跨过一个硬件周期, 无需 drain
+    uint8_t buf[65536];
+    int nReads = 0;
     while (!stopRequested_) {
         if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
         auto *p = reinterpret_cast<int16_t *>(buf);
         std::lock_guard<std::mutex> lk(sampleMutex_);
         samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
+        nReads++;
     }
+    auto tRecordEnd = std::chrono::steady_clock::now();
 
     if (onState_) onState_(false);
 
-    // --- Drain: wait (2000ms - elapsed%2000) + 100ms ---
-    // CX31993 2s burst/buffer cycle: wait until next block boundary, capture tail burst
-    auto stopTime = Clock::now();
-    using Ms = std::chrono::milliseconds;
-    auto elapsed = std::chrono::duration_cast<Ms>(stopTime - recordStart_).count();
-    auto waitMs = 2100 - (elapsed % 2000);
-    auto drainEnd = stopTime + Ms(waitMs);
-    fprintf(stderr, "Vinput Zipformer: recorded %ldms, wait %ldms (elapsed%%2000=%ld)\n",
-            elapsed, waitMs, elapsed % 2000);
-
-    while (Clock::now() < drainEnd) {
-        if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
-        auto *p = reinterpret_cast<int16_t *>(buf);
-        std::lock_guard<std::mutex> lk(sampleMutex_);
-        samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
-    }
-
     pa_simple_free(pa);
+    auto tPaClose = std::chrono::steady_clock::now();
 
-    // --- 处理 ---
+    fprintf(stderr, "Vinput Zipformer [timer] pa_open=%ldms record=%ldms pa_close=%ldms n_reads=%d samples=%zu\n",
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tPaOpen - t0).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tRecordEnd - tPaOpen).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tPaClose - tRecordEnd).count(),
+            nReads, samples_.size());
+
     std::vector<int16_t> batch;
     {
         std::lock_guard<std::mutex> lk(sampleMutex_);
@@ -113,6 +109,7 @@ void ZipformerAsrProvider::start() {
     sessionOnR_ = onResult_;
     sessionOnE_ = onError_;
     if (onState_) onState_(true);
+
     recordThread_ = std::thread(&ZipformerAsrProvider::recordLoop, this);
 }
 
@@ -132,13 +129,13 @@ void ZipformerAsrProvider::processRecording(std::vector<int16_t> samples,
 
 void ZipformerAsrProvider::normalizeAndWriteWav(std::vector<int16_t> &samples,
                                                  const std::string &wavPath) {
+    auto t0 = std::chrono::steady_clock::now();
+
     int16_t maxAbs = 0;
     for (auto s : samples) {
         int16_t a = s >= 0 ? s : (int16_t)-s;
         if (a > maxAbs) maxAbs = a;
     }
-    fprintf(stderr, "Vinput: %zu samples, max_abs=%d\n",
-            samples.size(), (int)maxAbs);
 
     auto *ebur = ebur128_init(1, 16000, EBUR128_MODE_I);
     ebur128_add_frames_short(ebur, samples.data(), samples.size());
@@ -154,7 +151,8 @@ void ZipformerAsrProvider::normalizeAndWriteWav(std::vector<int16_t> &samples,
     } else {
         gain = std::pow(10.0, (kTargetLUFS - loudness) / 20.0);
     }
-    fprintf(stderr, "Vinput: measured loudness %.1f LUFS, gain=%.2f\n", loudness, gain);
+
+    auto tEbur = std::chrono::steady_clock::now();
 
     for (auto &s : samples) {
         int32_t v = static_cast<int32_t>(s) * gain;
@@ -162,6 +160,8 @@ void ZipformerAsrProvider::normalizeAndWriteWav(std::vector<int16_t> &samples,
         if (v < -32768) v = -32768;
         s = static_cast<int16_t>(v);
     }
+
+    auto tGain = std::chrono::steady_clock::now();
 
     FILE *f = fopen(wavPath.c_str(), "wb");
     if (!f) return;
@@ -173,8 +173,8 @@ void ZipformerAsrProvider::normalizeAndWriteWav(std::vector<int16_t> &samples,
     fwrite("WAVE", 1, 4, f);
     fwrite("fmt ", 1, 4, f);
     uint32_t sub1 = 16, sr = 16000, br = 32000;
-    uint16_t fmt = 1, ch = 1, bps = 16, ba = 2;
-    fwrite(&sub1, 4, 1, f); fwrite(&fmt, 2, 1, f);
+    uint16_t fmt_tag = 1, ch = 1, bps = 16, ba = 2;
+    fwrite(&sub1, 4, 1, f); fwrite(&fmt_tag, 2, 1, f);
     fwrite(&ch, 2, 1, f); fwrite(&sr, 4, 1, f);
     fwrite(&br, 4, 1, f); fwrite(&ba, 2, 1, f);
     fwrite(&bps, 2, 1, f);
@@ -185,90 +185,88 @@ void ZipformerAsrProvider::normalizeAndWriteWav(std::vector<int16_t> &samples,
     fwrite(samples.data(), 2, samples.size(), f);
     fclose(f);
 
-    fprintf(stderr, "Vinput: Zipformer recorded %ld samples (%ld bytes)\n",
-            (long)samples.size(), dataSize);
+    auto tWav = std::chrono::steady_clock::now();
+
+    fprintf(stderr, "Vinput Zipformer [timer] ebur128=%ldms gain=%ldms wav_write=%ldms loudness=%.1f gain=%.2f max_abs=%d samples=%zu\n",
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tEbur - t0).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tGain - tEbur).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tWav - tGain).count(),
+            loudness, gain, (int)maxAbs, samples.size());
 }
 
 void ZipformerAsrProvider::runTranscribe(const std::string &wav,
                                           const std::string &dir,
                                           AsrResultCallback onR,
                                           AsrErrorCallback onE) {
-    auto sherpaBin = expandPath("~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx");
-    auto encoder  = dir + "/encoder-epoch-99-avg-1.onnx";
-    auto decoder  = dir + "/decoder-epoch-99-avg-1.onnx";
-    auto joiner   = dir + "/joiner-epoch-99-avg-1.onnx";
-    auto tokens   = dir + "/tokens.txt";
-
     std::thread([=]() {
-        int outPipe[2], errPipe[2];
-        if (pipe(outPipe) < 0 || pipe(errPipe) < 0) {
+        auto t0 = std::chrono::steady_clock::now();
+
+        int pipefd[2];
+        if (pipe(pipefd) < 0) {
             if (onE) onE("Zipformer: pipe failed");
             return;
         }
 
         pid_t pid = fork();
         if (pid < 0) {
+            close(pipefd[0]); close(pipefd[1]);
             if (onE) onE("Zipformer: fork failed");
-            close(outPipe[0]); close(outPipe[1]);
-            close(errPipe[0]); close(errPipe[1]);
             return;
         }
-
         if (pid == 0) {
-            dup2(outPipe[1], STDOUT_FILENO);
-            dup2(errPipe[1], STDERR_FILENO);
-            close(outPipe[0]); close(outPipe[1]);
-            close(errPipe[0]); close(errPipe[1]);
+            close(pipefd[0]);
+            dup2(pipefd[1], STDERR_FILENO);
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[1]);
 
-            std::string encArg = "--encoder=" + encoder;
-            std::string decArg = "--decoder=" + decoder;
-            std::string joiArg = "--joiner="  + joiner;
-            std::string tokArg = "--tokens="  + tokens;
+            auto sherpaBin = expandPath("~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx");
+            std::string encoder = "--encoder=" + dir + "/encoder-epoch-99-avg-1.onnx";
+            std::string decoder = "--decoder=" + dir + "/decoder-epoch-99-avg-1.onnx";
+            std::string joiner  = "--joiner="  + dir + "/joiner-epoch-99-avg-1.onnx";
+            std::string tokens  = "--tokens="  + dir + "/tokens.txt";
 
             execl(sherpaBin.c_str(), sherpaBin.c_str(),
-                  encArg.c_str(), decArg.c_str(), joiArg.c_str(), tokArg.c_str(),
-                  "--provider=cpu", "--num-threads=4",
-                  wav.c_str(), nullptr);
+                  encoder.c_str(),
+                  decoder.c_str(),
+                  joiner.c_str(),
+                  tokens.c_str(),
+                  "--provider=cpu",
+                  "--num-threads=30",
+                  wav.c_str(),
+                  nullptr);
             _exit(127);
         }
 
-        close(outPipe[1]);
-        close(errPipe[1]);
+        close(pipefd[1]);
 
-        auto readFd = [](int fd, std::string &out) {
-            char buf[4096];
-            ssize_t n;
-            while ((n = read(fd, buf, sizeof(buf))) > 0)
-                out.append(buf, (size_t)n);
-            close(fd);
-        };
-
-        std::string stdoutText, stderrText;
-        std::thread outReader(readFd, outPipe[0], std::ref(stdoutText));
-        readFd(errPipe[0], std::ref(stderrText));
-        outReader.join();
+        std::string output;
+        char buf[4096];
+        ssize_t n;
+        while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+            output.append(buf, (size_t)n);
+        }
+        close(pipefd[0]);
 
         int status;
         waitpid(pid, &status, 0);
+        auto tRecv = std::chrono::steady_clock::now();
 
-        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-            fprintf(stderr, "Vinput: sherpa-onnx exited %d, stderr:\n%s\n",
-                    WEXITSTATUS(status), stderrText.c_str());
-            if (onE) onE("Zipformer: recognition failed");
-            return;
+        auto pos = output.rfind("\"text\"");
+        std::string text;
+        if (pos != std::string::npos) {
+            pos += 9;
+            auto end = output.find('"', pos);
+            if (end != std::string::npos)
+                text = output.substr(pos, end - pos);
         }
 
-        auto pos = stderrText.rfind("\"text\"");
-        if (pos == std::string::npos) {
-            if (onE) onE("Zipformer: no text in output");
-            return;
-        }
+        auto tParse = std::chrono::steady_clock::now();
+        fprintf(stderr, "Vinput Zipformer [timer] exec_total=%ldms parse=%ldms text=\"%s\"\n",
+                (long)std::chrono::duration_cast<std::chrono::milliseconds>(tRecv - t0).count(),
+                (long)std::chrono::duration_cast<std::chrono::milliseconds>(tParse - tRecv).count(),
+                text.c_str());
 
-        pos += 9;
-        auto end = stderrText.find('"', pos);
-        std::string text = stderrText.substr(pos, end - pos);
-
-        fprintf(stderr, "Vinput: text = %s\n", text.c_str());
+        unlink(wav.c_str());
         if (onR && !text.empty()) onR(text, true);
         else if (onE) onE("Zipformer: empty result");
     }).detach();

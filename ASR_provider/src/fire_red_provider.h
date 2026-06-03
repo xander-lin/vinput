@@ -6,7 +6,6 @@
 #include <mutex>
 #include <vector>
 #include <cstdint>
-#include <chrono>
 #include "asr_provider.h"
 
 struct pa_simple;
@@ -31,8 +30,8 @@ private:
 
     static void normalizeAndWriteWav(std::vector<int16_t> &samples,
                                       const std::string &path);
-    static void runTranscribe(const std::string &wav, const std::string &dir,
-                               AsrResultCallback onR, AsrErrorCallback onE);
+    void runTranscribe(const std::string &wav, const std::string &dir,
+                       AsrResultCallback onR, AsrErrorCallback onE);
 
     std::string modelDir_;
 
@@ -45,8 +44,6 @@ private:
     std::string sessionDir_;
     AsrResultCallback sessionOnR_;
     AsrErrorCallback sessionOnE_;
-
-    std::chrono::steady_clock::time_point recordStart_;
 };
 
 class FireRedAsrProviderFactory : public IAsrProviderFactory {

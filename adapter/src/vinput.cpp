@@ -27,6 +27,7 @@
 #include <spawn.h>
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 
 // Vinput ASR provider 接口
 #include "asr_provider.h"
@@ -81,6 +82,9 @@ public:
                 }
                 if (capturedWinId_.empty() || batch.empty()) {
                     // 无窗口绑定: 直接提交到当前焦点窗口
+                    auto tCommit = std::chrono::steady_clock::now();
+                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tCommit - tPress_).count();
+                    fprintf(stderr, "Vinput [timer] press→commit=%ldms\n", ms);
                     for (auto &pc : batch) {
                         auto *ic = instance_->mostRecentInputContext();
                         if (!ic) {
@@ -114,6 +118,9 @@ public:
                     CLOCK_MONOTONIC, commitTime, 0,
                     [this, batch = std::move(batch), restoreId, capturedId](
                         fcitx::EventSourceTime *, uint64_t) mutable {
+                        auto tNow = std::chrono::steady_clock::now();
+                        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tNow - tPress_).count();
+                        fprintf(stderr, "Vinput [timer] press→niri-commit=%ldms\n", ms);
                         auto *ic = instance_->mostRecentInputContext();
                         if (ic) {
                             for (auto &pc : batch) {
@@ -249,6 +256,9 @@ private:
     int revertDebounce_ = 0;            // uinput CapsLock 反弹去抖计数
     std::string capturedWinId_;         // niri window id, 录音激活时捕获
     std::unique_ptr<fcitx::EventSourceTime> commitTimer_;
+
+    // 性能计时
+    std::chrono::steady_clock::time_point tPress_, tActivate_, tStop_, tCommit_;
     std::unique_ptr<fcitx::EventSourceTime> timer_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
@@ -348,6 +358,7 @@ private:
                 return;
             }
             if (timer_ || active_ || switchActive_) return;
+            tPress_ = std::chrono::steady_clock::now();
             currentIC_ = keyEvent.inputContext();
             if (currentIC_) {
                 currentUuid_ = currentIC_->uuid();
@@ -403,7 +414,9 @@ private:
     void onActivate() {
         timer_.reset();
         active_ = true;
-        FCITX_INFO() << "Vinput activated";
+        tActivate_ = std::chrono::steady_clock::now();
+        auto pressMs = std::chrono::duration_cast<std::chrono::milliseconds>(tActivate_ - tPress_).count();
+        FCITX_INFO() << "Vinput activated (press→activate=" << pressMs << "ms)";
 
         // 重新捕获当前焦点窗口 (比 KeyEvent::inputContext 更可靠)
         auto *ic = instance_->mostRecentInputContext();
@@ -473,7 +486,9 @@ private:
     // 松键后结束
     void onDeactivate() {
         active_ = false;
-        FCITX_INFO() << "Vinput deactivated";
+        tStop_ = std::chrono::steady_clock::now();
+        auto recMs = std::chrono::duration_cast<std::chrono::milliseconds>(tStop_ - tActivate_).count();
+        FCITX_INFO() << "Vinput deactivated (record=" << recMs << "ms)";
 
         if (asr_) {
             asr_->stop();
@@ -501,6 +516,11 @@ private:
 
     // ASR 识别结果回调 (可能在后台线程调用)
     void onAsrResult(const std::string &text, bool isFinal) {
+        auto tResult = std::chrono::steady_clock::now();
+        auto stopToResult = std::chrono::duration_cast<std::chrono::milliseconds>(tResult - tStop_).count();
+        auto pressToResult = std::chrono::duration_cast<std::chrono::milliseconds>(tResult - tPress_).count();
+        fprintf(stderr, "Vinput [timer] stop→result=%ldms, press→result=%ldms\n",
+                stopToResult, pressToResult);
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
 

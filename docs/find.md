@@ -125,6 +125,72 @@
 - parecord 测试麦克风: `parecord --rate=16000 --format=s16le --channels=1 /tmp/test.wav`
 - `pactl list short sources` 查看可用录音源
 
+### 常驻 WebSocket Server 尝试（最终回退到 fork+exec）
+
+#### 动机
+sherpa-onnx-offline 每录音 fork+exec 一次，模型加载（尤其是 FireRed 1.2GB AED 模型）在每次调用中重新初始化 ONNX Runtime 计算图，耗时 ~3.2s。用 `sherpa-onnx-offline-websocket-server` 常驻进程可以省掉重复初始化。
+
+#### 协议陷阱
+WebSocket server 的 binary 消息格式是：
+```
+[int32_le sample_rate] [int32_le float_byte_count] [float_le PCM...]
+```
+**不是**原始 WAV 文件。发 WAV 会导致 sample_rate 被读成 `"RIFF"`（0x46464952=1.18e9），duration 被算成 6.8e-5 秒，触发 `payload too large` 拒绝。解决方案：解析 WAV header，int16→float 转换后按协议打包。
+
+#### 崩溃问题
+server 进程在 fcitx5 内 `fork()` 出来后不稳定：
+- 端口打开成功（TCP probe 通过）
+- ~2s 后进程崩溃（ECONNRESET）
+- 降线程（30→4→1）、加 settle 等待、进程探活均无效
+- 根因推测：fcitx5 多线程环境下 `fork()` 存在 mutex 继承、FD 泄漏等问题，子进程状态不确定
+
+#### 结论
+- **回退到 fork+exec 每录音**，简单可靠
+- 后续考虑 systemd service 托管 server 进程（不在 fcitx5 进程内 fork）
+- FireRed 常驻化预期可省 ~2s（计算图初始化），推理本身 ~1s
+- zipformer（~100MB）模型小、doubao（云端）不受影响
+
+### 64K 录音缓冲区（消除 drain）
+
+#### 发现
+- 原 4K 缓冲在 CX31993 burst 期需读 15 次，`stop()` 可能落在 burst 中间导致丢尾部数据
+- 改成 **64K 缓冲区**（2s 音频量）后 `pa_simple_read` 阻塞读自然跨过硬件周期：fill 期阻塞 2s 等于一次完整 burst 投递
+- `stop()` 置位后循环末次读一定在 fill 期阻塞过，数据完整
+- n_reads 从 ~2000（4K）降到 ~1（64K），一次读就够了
+
+#### 结论
+显式 drain 逻辑（原有时间推算/计时检测方案）全部移除，大缓冲区 + 阻塞读本身既是同步也是收尾。
+
+### Ctrl+CapsLock 模型切换
+
+#### 设计
+- **CapsLock 长按** → 语音录音识别（不变）
+- **Ctrl+CapsLock** → 独立切换模式：方向键切换模型，不启动录音
+- `switchActive_` 标志隔离两个模式，消除识别与切换的冲突
+
+### Wayland 下 commitString 窗口绑定不可行
+
+#### 发现
+- `commitString()` 最终通过 `zwp_input_method_v1::commit_string` 发给合成器
+- 合成器只路由到**当前键盘焦点 surface**，不认 fcitx5 内部的 IC UUID
+- 即使 `findByUUID()` 返回正确 IC，commit 仍到焦点窗口
+- 日志验证：`findByUUID` 返回 Firefox IC、`commitString` 调用成功，但文本到鼠标所在窗口
+
+#### niri 窗口绑定方案
+- `onActivate()` 时 `niri msg focused-window` 捕获窗口 ID
+- 提交时 `niri msg action focus-window --id <captured>` → 等 150ms → `commitString` → `niri msg action focus-window --id <original>` 恢复焦点
+- **代价**：提交瞬间焦点跳闪一次
+- `capturedWinId_` 不随 `onDeactivate()` 清除（ASR 结果在 deactivate 后到）
+
+### 豆包 API header 解析修正
+- doubao_provider.cpp 中 `getHeader()` 匹配 `"\n" + name + ":"` 防止命中 `access-control-expose-headers` 值里的 `X-Api-Status-Code` 字串
+- WAV cleanup 移到 detached 线程 lambda 中（RAII `Cleanup` struct），析构函数不删文件
+
+### Python 包管理规则（全局）
+写在 `~/.config/opencode/AGENTS.md`：
+- 唯一允许用 `uv venv && uv pip install xxx`
+- 禁止 pip install、pacman -S python-xxx、`uv pip install --system`
+
 ## 2026-06-02
 
 ### 构建系统

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <cmath>
+#include <chrono>
 #include <fstream>
 #include <memory>
 #include <ebur128.h>
@@ -110,6 +111,8 @@ static void loadConfig(std::string &apiKey, std::string &resourceId) {
 }
 
 static bool writeWav(std::vector<int16_t> &samples, const std::string &path) {
+    auto t0 = std::chrono::steady_clock::now();
+
     ebur128_state *ebur = ebur128_init(1, 16000, EBUR128_MODE_I);
     ebur128_add_frames_short(ebur, samples.data(), samples.size());
     double loudness = 0.0;
@@ -124,7 +127,8 @@ static bool writeWav(std::vector<int16_t> &samples, const std::string &path) {
     } else {
         gain = std::pow(10.0, (kTargetLUFS - loudness) / 20.0);
     }
-    fprintf(stderr, "Vinput Doubao: loudness %.1f LUFS, gain=%.2f\n", loudness, gain);
+
+    auto tEbur = std::chrono::steady_clock::now();
 
     for (auto &s : samples) {
         int32_t v = static_cast<int32_t>(s) * gain;
@@ -132,6 +136,8 @@ static bool writeWav(std::vector<int16_t> &samples, const std::string &path) {
         if (v < -32768) v = -32768;
         s = static_cast<int16_t>(v);
     }
+
+    auto tGain = std::chrono::steady_clock::now();
 
     FILE *f = fopen(path.c_str(), "wb");
     if (!f) {
@@ -156,6 +162,14 @@ static bool writeWav(std::vector<int16_t> &samples, const std::string &path) {
     fwrite(&ds, 4, 1, f);
     fwrite(samples.data(), 2, samples.size(), f);
     fclose(f);
+
+    auto tWav = std::chrono::steady_clock::now();
+
+    fprintf(stderr, "Vinput Doubao [timer] ebur128=%ldms gain=%ldms wav_write=%ldms loudness=%.1f gain=%.2f samples=%zu\n",
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tEbur - t0).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tGain - tEbur).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tWav - tGain).count(),
+            loudness, gain, samples.size());
     return true;
 }
 
@@ -174,7 +188,7 @@ void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &val
 }
 
 void DoubaoAsrProvider::recordLoop() {
-    using Clock = std::chrono::steady_clock;
+
 
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
@@ -182,6 +196,7 @@ void DoubaoAsrProvider::recordLoop() {
     ss.channels = 1;
 
     int error = 0;
+    auto t0 = std::chrono::steady_clock::now();
     pa_simple *pa = pa_simple_new(nullptr, "vinput-doubao", PA_STREAM_RECORD,
                                   nullptr, "voice", &ss, nullptr, nullptr, &error);
     if (!pa) {
@@ -189,37 +204,30 @@ void DoubaoAsrProvider::recordLoop() {
         if (onError_) onError_("Doubao: microphone open failed");
         return;
     }
+    auto tPaOpen = std::chrono::steady_clock::now();
 
-    // --- 录音阶段 ---
-    uint8_t buf[4096];
-    recordStart_ = Clock::now();
+    // 64K 缓冲区 ≈ 2s 音频, 一次读跨过一个硬件周期, 无需 drain
+    uint8_t buf[65536];
+    int nReads = 0;
     while (!stopRequested_) {
         if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
         auto *p = reinterpret_cast<int16_t *>(buf);
         std::lock_guard<std::mutex> lk(sampleMutex_);
         samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
+        nReads++;
     }
+    auto tRecordEnd = std::chrono::steady_clock::now();
 
     if (onState_) onState_(false);
 
-    // --- Drain: wait (2000ms - elapsed%2000) + 100ms ---
-    // CX31993 2s burst/buffer cycle: wait until next block boundary, capture tail burst
-    auto stopTime = Clock::now();
-    using Ms = std::chrono::milliseconds;
-    auto elapsed = std::chrono::duration_cast<Ms>(stopTime - recordStart_).count();
-    auto waitMs = 2100 - (elapsed % 2000);
-    auto drainEnd = stopTime + Ms(waitMs);
-    fprintf(stderr, "Vinput Doubao: recorded %ldms, wait %ldms (elapsed%%2000=%ld)\n",
-            elapsed, waitMs, elapsed % 2000);
-
-    while (Clock::now() < drainEnd) {
-        if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
-        auto *p = reinterpret_cast<int16_t *>(buf);
-        std::lock_guard<std::mutex> lk(sampleMutex_);
-        samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
-    }
-
     pa_simple_free(pa);
+    auto tPaClose = std::chrono::steady_clock::now();
+
+    fprintf(stderr, "Vinput Doubao [timer] pa_open=%ldms record=%ldms pa_close=%ldms n_reads=%d samples=%zu\n",
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tPaOpen - t0).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tRecordEnd - tPaOpen).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tPaClose - tRecordEnd).count(),
+            nReads, samples_.size());
 
     // --- 处理 ---
     std::vector<int16_t> batch;
@@ -276,6 +284,7 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
     }
 
     std::thread([=]() {
+        auto t0 = std::chrono::steady_clock::now();
         struct Cleanup { std::string p; ~Cleanup() { unlink(p.c_str()); } } _wav{wavPath};
 
         std::ifstream wf(wavPath, std::ios::binary);
@@ -290,6 +299,7 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
             return;
         }
         std::string b64 = base64Encode(wavData.data(), wavData.size());
+        auto tEncode = std::chrono::steady_clock::now();
 
         std::string taskId = generateUuid();
 
@@ -355,6 +365,8 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
             }
         }
 
+        auto tSubmit = std::chrono::steady_clock::now();
+
         constexpr int kMaxPoll = 75;
         for (int pollCount = 1; pollCount <= kMaxPoll; pollCount++) {
             usleep(800000);
@@ -400,14 +412,23 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
             std::string statusCode = getHeader(respHdr, "x-api-status-code");
 
             if (statusCode == "20000000") {
+                auto tResult = std::chrono::steady_clock::now();
                 std::string text = jsonGetString(respBody, "text");
-                fprintf(stderr, "Vinput Doubao: result=\"%s\" (polled %d)\n",
-                        text.c_str(), pollCount);
+                fprintf(stderr, "Vinput Doubao [timer] encode=%ldms submit=%ldms poll=%ldms poll_n=%d text=\"%s\"\n",
+                        (long)std::chrono::duration_cast<std::chrono::milliseconds>(tEncode - t0).count(),
+                        (long)std::chrono::duration_cast<std::chrono::milliseconds>(tSubmit - tEncode).count(),
+                        (long)std::chrono::duration_cast<std::chrono::milliseconds>(tResult - tSubmit).count(),
+                        pollCount, text.c_str());
                 if (onR) onR(text, true);
                 return;
             }
             if (statusCode == "20000003") {
-                fprintf(stderr, "Vinput Doubao: no speech detected\n");
+                auto tResult = std::chrono::steady_clock::now();
+                fprintf(stderr, "Vinput Doubao [timer] encode=%ldms submit=%ldms poll=%ldms poll_n=%d (silence)\n",
+                        (long)std::chrono::duration_cast<std::chrono::milliseconds>(tEncode - t0).count(),
+                        (long)std::chrono::duration_cast<std::chrono::milliseconds>(tSubmit - tEncode).count(),
+                        (long)std::chrono::duration_cast<std::chrono::milliseconds>(tResult - tSubmit).count(),
+                        pollCount);
                 if (onR) onR("", true);
                 return;
             }
