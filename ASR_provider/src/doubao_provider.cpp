@@ -192,6 +192,7 @@ void DoubaoAsrProvider::recordLoop() {
 
     // --- 录音阶段 ---
     uint8_t buf[4096];
+    recordStart_ = Clock::now();
     while (!stopRequested_) {
         if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
         auto *p = reinterpret_cast<int16_t *>(buf);
@@ -201,30 +202,21 @@ void DoubaoAsrProvider::recordLoop() {
 
     if (onState_) onState_(false);
 
-    // --- Drain 阶段: 等待下一个 burst 以捕获尾部音频 ---
-    // CX31993 芯片有 ~2s burst / ~2s buffering 的硬件占空比。
-    // 计数两次长阻塞 (>500ms) 确保跨过一个完整的 burst 周期。
-    auto drainStart = Clock::now();
-    auto lastRead = drainStart;
-    int longBlockCount = 0;
-    constexpr double kMaxDrainMs = 4000;
+    // --- Drain: wait (2000ms - elapsed%2000) + 100ms ---
+    // CX31993 2s burst/buffer cycle: wait until next block boundary, capture tail burst
+    auto stopTime = Clock::now();
+    using Ms = std::chrono::milliseconds;
+    auto elapsed = std::chrono::duration_cast<Ms>(stopTime - recordStart_).count();
+    auto waitMs = 2100 - (elapsed % 2000);
+    auto drainEnd = stopTime + Ms(waitMs);
+    fprintf(stderr, "Vinput Doubao: recorded %ldms, wait %ldms (elapsed%%2000=%ld)\n",
+            elapsed, waitMs, elapsed % 2000);
 
-    while (true) {
+    while (Clock::now() < drainEnd) {
         if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
         auto *p = reinterpret_cast<int16_t *>(buf);
-        {
-            std::lock_guard<std::mutex> lk(sampleMutex_);
-            samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
-        }
-
-        auto now = Clock::now();
-        double readMs = std::chrono::duration<double, std::milli>(now - lastRead).count();
-        lastRead = now;
-
-        if (readMs > 500) longBlockCount++;
-
-        double drainMs = std::chrono::duration<double, std::milli>(now - drainStart).count();
-        if (longBlockCount >= 2 || drainMs >= kMaxDrainMs) break;
+        std::lock_guard<std::mutex> lk(sampleMutex_);
+        samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
     }
 
     pa_simple_free(pa);

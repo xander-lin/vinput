@@ -45,6 +45,8 @@ private:
     std::string sessionDir_;
     AsrResultCallback sessionOnR_;
     AsrErrorCallback sessionOnE_;
+
+    std::chrono::steady_clock::time_point recordStart_;
 };
 
 class ZipformerAsrProviderFactory : public IAsrProviderFactory {

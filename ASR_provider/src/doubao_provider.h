@@ -39,6 +39,8 @@ private:
     std::string sessionWav_;
     AsrResultCallback sessionOnR_;
     AsrErrorCallback sessionOnE_;
+
+    std::chrono::steady_clock::time_point recordStart_;
 };
 
 class DoubaoAsrProviderFactory : public IAsrProviderFactory {
