@@ -246,11 +246,11 @@ void DoubaoAsrProvider::start() {
     // 单线程 IO: 轮询发送音频 + 接收结果
     std::thread([this]() {
         std::string raw, text;
-        bool definite = false;
+        bool definite = false, finalSent = false;
         int sentCount = 0, recvCount = 0;
 
-        while (sendRunning_ || !definite) {
-            // 1. 发送: 如果有足够音频数据就发一帧
+        while (!definite) {
+            // 1. 发送
             if (sendRunning_) {
                 std::vector<int16_t> chunk;
                 {
@@ -266,9 +266,14 @@ void DoubaoAsrProvider::start() {
                     if (sentCount % 5 == 1)
                         fprintf(stderr, "Vinput Doubao: sent %d audio frames\n", sentCount);
                 }
+            } else if (!finalSent) {
+                // stop() 已调用 — 发最后一帧
+                wsSendFrame(0x02, 0x02, nullptr, 0);
+                finalSent = true;
+                fprintf(stderr, "Vinput Doubao: sent final frame (total=%d)\n", sentCount);
             }
 
-            // 2. 接收: 非阻塞检查是否有响应
+            // 2. 接收
             if (wsRecvFrame(raw)) {
                 recvCount++;
                 if (parseResponse(raw, text, definite)) {
@@ -279,21 +284,16 @@ void DoubaoAsrProvider::start() {
                 }
             }
 
-            usleep(10000);  // 10ms 轮询间隔
-        }
-
-        // 如果还没收到 definite，发送最后一包再等
-        if (!definite) {
-            wsSendFrame(0x02, 0x02, nullptr, 0);
-            fprintf(stderr, "Vinput Doubao: sent final frame (total=%d)\n", sentCount);
-            for (int i = 0; i < 200 && !definite; i++) {
-                if (wsRecvFrame(raw)) {
-                    text.clear();
-                    if (parseResponse(raw, text, definite) && !text.empty() && onResult_)
-                        onResult_(text, definite);
+            // 发完最后一帧后等 10 秒超时
+            if (finalSent && !definite) {
+                static int waitCount = 0;
+                if (++waitCount > 200) {  // 10s timeout
+                    fprintf(stderr, "Vinput Doubao: timeout waiting for definite\n");
+                    break;
                 }
-                usleep(50000);
             }
+
+            usleep(50000);  // 50ms 轮询
         }
 
         // 保存 WAV
