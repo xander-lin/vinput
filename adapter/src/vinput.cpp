@@ -254,6 +254,7 @@ private:
         if (list.empty()) return false;
 
         providerIndex_ = (providerIndex_ + direction + (int)list.size()) % (int)list.size();
+        lastCommittedSize_ = 0;
         const auto &[nextId, nextName] = list[providerIndex_];
 
         // 通知用户即将切换到哪个后端 (在实际停止/创建之前)
@@ -295,6 +296,7 @@ private:
     void onActivate() {
         timer_.reset();
         active_ = true;
+        lastCommittedSize_ = 0;  // 每次激活重置增量追踪
         FCITX_INFO() << "Vinput activated";
 
         auto list = vinput::AsrProviderRegistry::instance().listFactories();
