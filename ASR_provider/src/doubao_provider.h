@@ -40,9 +40,8 @@ private:
     std::mutex sampleMutex_;
     std::vector<int16_t> samples_;
 
-    // WebSocket (双 handle: 一个发一个收)
-    void *curlSend_ = nullptr;
-    void *curlRecv_ = nullptr;
+    // WebSocket (单线程轮询收发)
+    void *curl_ = nullptr;
 };
 
 class DoubaoAsrProviderFactory : public IAsrProviderFactory {

@@ -107,8 +107,7 @@ DoubaoAsrProvider::~DoubaoAsrProvider() {
     keepAliveRunning_ = false;
     if (keepAliveThread_.joinable()) keepAliveThread_.join();
     if (paStream_) { pa_simple_free(paStream_); paStream_ = nullptr; }
-    if (curlSend_) { curl_easy_cleanup((CURL *)curlSend_); curlSend_ = nullptr; }
-    if (curlRecv_) { curl_easy_cleanup((CURL *)curlRecv_); curlRecv_ = nullptr; }
+    if (curl_) { curl_easy_cleanup((CURL *)curl_); curl_ = nullptr; }
 }
 
 void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &value) {
@@ -134,17 +133,10 @@ void DoubaoAsrProvider::keepAliveLoop() {
 }
 
 bool DoubaoAsrProvider::wsConnect() {
-    if (curlSend_) { curl_easy_cleanup((CURL *)curlSend_); curlSend_ = nullptr; }
-    if (curlRecv_) { curl_easy_cleanup((CURL *)curlRecv_); curlRecv_ = nullptr; }
+    if (curl_) { curl_easy_cleanup((CURL *)curl_); curl_ = nullptr; }
 
-    // 创建两个 handle: 一个发一个收
-    CURL *cs = curl_easy_init();
-    CURL *cr = curl_easy_init();
-    if (!cs || !cr) {
-        if (cs) curl_easy_cleanup(cs);
-        if (cr) curl_easy_cleanup(cr);
-        return false;
-    }
+    CURL *c = curl_easy_init();
+    if (!c) return false;
 
     struct curl_slist *headers = nullptr;
     headers = curl_slist_append(headers, ("X-Api-Key: " + apiKey_).c_str());
@@ -152,43 +144,30 @@ bool DoubaoAsrProvider::wsConnect() {
     headers = curl_slist_append(headers, "X-Api-Request-Id: vinput-doubao");
     headers = curl_slist_append(headers, "X-Api-Sequence: -1");
 
-    auto setup = [&](CURL *c) {
-        curl_easy_setopt(c, CURLOPT_URL,
-                         "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel");
-        curl_easy_setopt(c, CURLOPT_CONNECT_ONLY, 2L);
-        curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
-        return curl_easy_perform(c);
-    };
+    curl_easy_setopt(c, CURLOPT_URL,
+                     "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel");
+    curl_easy_setopt(c, CURLOPT_CONNECT_ONLY, 2L);
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
 
-    CURLcode r1 = setup(cs);
-    CURLcode r2 = setup(cr);
+    CURLcode res = curl_easy_perform(c);
     curl_slist_free_all(headers);
 
-    if (r1 != CURLE_OK) {
-        fprintf(stderr, "Vinput Doubao: send WS connect failed: %s\n",
-                curl_easy_strerror(r1));
-        curl_easy_cleanup(cs); curl_easy_cleanup(cr);
-        return false;
-    }
-    if (r2 != CURLE_OK) {
-        fprintf(stderr, "Vinput Doubao: recv WS connect failed: %s\n",
-                curl_easy_strerror(r2));
-        curl_easy_cleanup(cs); curl_easy_cleanup(cr);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Vinput Doubao: WS connect failed: %s\n", curl_easy_strerror(res));
+        curl_easy_cleanup(c);
         return false;
     }
 
-    curlSend_ = cs;
-    curlRecv_ = cr;
-    fprintf(stderr, "Vinput Doubao: WS connected (dual handle)\n");
+    curl_ = c;
     return true;
 }
 
 void DoubaoAsrProvider::wsSendFrame(uint8_t msgType, uint8_t flags,
                                      const void *payload, uint32_t len) {
-    if (!curlSend_) return;
+    if (!curl_) return;
     auto frame = buildFrame(msgType, flags, payload, len);
     size_t sent = 0;
-    CURLcode res = curl_ws_send((CURL *)curlSend_, frame.data(), frame.size(),
+    CURLcode res = curl_ws_send((CURL *)curl_, frame.data(), frame.size(),
                                 &sent, 0, CURLWS_RAW_MODE);
     if (res != CURLE_OK) {
         fprintf(stderr, "Vinput Doubao: ws send error: %s\n",
@@ -197,11 +176,11 @@ void DoubaoAsrProvider::wsSendFrame(uint8_t msgType, uint8_t flags,
 }
 
 bool DoubaoAsrProvider::wsRecvFrame(std::string &out) {
-    if (!curlRecv_) return false;
+    if (!curl_) return false;
     char buf[16384];
     size_t recv = 0;
     const struct curl_ws_frame *meta = nullptr;
-    CURLcode res = curl_ws_recv((CURL *)curlRecv_, buf, sizeof(buf), &recv, &meta);
+    CURLcode res = curl_ws_recv((CURL *)curl_, buf, sizeof(buf), &recv, &meta);
     if (res == CURLE_AGAIN) return false;
     if (res != CURLE_OK) {
         fprintf(stderr, "Vinput Doubao: ws recv error: %s\n",
@@ -264,52 +243,59 @@ void DoubaoAsrProvider::start() {
     sendRunning_ = true;
     if (onState_) onState_(true);
 
-    // 发送线程
-    std::thread([this]() {
-        int frameCount = 0;
-        while (sendRunning_) {
-            std::vector<int16_t> chunk;
-            {
-                std::lock_guard<std::mutex> lk(sampleMutex_);
-                if (samples_.size() >= 3200) {
-                    chunk.assign(samples_.begin(), samples_.begin() + 3200);
-                    samples_.erase(samples_.begin(), samples_.begin() + 3200);
-                }
-            }
-            if (chunk.size() >= 3200) {
-                wsSendFrame(0x02, 0x00, chunk.data(), (uint32_t)(chunk.size() * 2));
-                frameCount++;
-                if (frameCount % 5 == 1)
-                    fprintf(stderr, "Vinput Doubao: sent %d audio frames\n", frameCount);
-            } else {
-                usleep(20000);
-            }
-        }
-        // 最后一包
-        {
-            wsSendFrame(0x02, 0x02, nullptr, 0);
-            fprintf(stderr, "Vinput Doubao: sent final frame (total=%d)\n", frameCount);
-        }
-    }).detach();
-
-    // 接收线程
+    // 单线程 IO: 轮询发送音频 + 接收结果
     std::thread([this]() {
         std::string raw, text;
         bool definite = false;
-        int recvCount = 0;
+        int sentCount = 0, recvCount = 0;
+
         while (sendRunning_ || !definite) {
-            if (!wsRecvFrame(raw)) {
-                usleep(50000);
-                continue;
+            // 1. 发送: 如果有足够音频数据就发一帧
+            if (sendRunning_) {
+                std::vector<int16_t> chunk;
+                {
+                    std::lock_guard<std::mutex> lk(sampleMutex_);
+                    if (samples_.size() >= 3200) {
+                        chunk.assign(samples_.begin(), samples_.begin() + 3200);
+                        samples_.erase(samples_.begin(), samples_.begin() + 3200);
+                    }
+                }
+                if (chunk.size() >= 3200) {
+                    wsSendFrame(0x02, 0x00, chunk.data(), (uint32_t)(chunk.size() * 2));
+                    sentCount++;
+                    if (sentCount % 5 == 1)
+                        fprintf(stderr, "Vinput Doubao: sent %d audio frames\n", sentCount);
+                }
             }
-            recvCount++;
-            if (parseResponse(raw, text, definite)) {
-                fprintf(stderr, "Vinput Doubao: recv #%d text=\"%s\" final=%d\n",
-                        recvCount, text.c_str(), definite);
-                if (!text.empty() && onResult_) onResult_(text, definite);
-                if (definite) break;
+
+            // 2. 接收: 非阻塞检查是否有响应
+            if (wsRecvFrame(raw)) {
+                recvCount++;
+                if (parseResponse(raw, text, definite)) {
+                    fprintf(stderr, "Vinput Doubao: recv #%d text=\"%s\" final=%d\n",
+                            recvCount, text.c_str(), definite);
+                    if (!text.empty() && onResult_) onResult_(text, definite);
+                    if (definite) break;
+                }
+            }
+
+            usleep(10000);  // 10ms 轮询间隔
+        }
+
+        // 如果还没收到 definite，发送最后一包再等
+        if (!definite) {
+            wsSendFrame(0x02, 0x02, nullptr, 0);
+            fprintf(stderr, "Vinput Doubao: sent final frame (total=%d)\n", sentCount);
+            for (int i = 0; i < 200 && !definite; i++) {
+                if (wsRecvFrame(raw)) {
+                    text.clear();
+                    if (parseResponse(raw, text, definite) && !text.empty() && onResult_)
+                        onResult_(text, definite);
+                }
+                usleep(50000);
             }
         }
+
         // 保存 WAV
         {
             std::lock_guard<std::mutex> lk(sampleMutex_);
