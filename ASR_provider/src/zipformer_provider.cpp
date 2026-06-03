@@ -67,14 +67,6 @@ void ZipformerAsrProvider::keepAliveLoop() {
         }
 
         if (stopRequested_) {
-            // 松键后收尾: 等 500ms 再读最后 128ms 尾巴
-            usleep(500 * 1000);
-            if (pa_simple_read(paStream_, buf, sizeof(buf), &error) >= 0) {
-                auto *p = reinterpret_cast<int16_t *>(buf);
-                std::lock_guard<std::mutex> lk(sampleMutex_);
-                samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
-            }
-
             // 取出累积的样本，释放锁后处理
             std::vector<int16_t> batch;
             {
@@ -92,9 +84,7 @@ void ZipformerAsrProvider::keepAliveLoop() {
             stopCv_.notify_all();
 
             if (!batch.empty()) {
-                processRecording(std::move(batch), wav, onR, onE);
-                // transcribe 线程自己管自己，不 join
-                // WAV 保留在 /tmp 不删除
+                processRecording(std::move(batch), wav, dir, onR, onE);
             }
         }
     }
@@ -128,10 +118,11 @@ void ZipformerAsrProvider::stop() {
 
 void ZipformerAsrProvider::processRecording(std::vector<int16_t> samples,
                                               const std::string &wavPath,
+                                              const std::string &dir,
                                               AsrResultCallback onR,
                                               AsrErrorCallback onE) {
     normalizeAndWriteWav(samples, wavPath);
-    runTranscribe(wavPath, sessionDir_, onR, onE);
+    runTranscribe(wavPath, dir, onR, onE);
 }
 
 void ZipformerAsrProvider::normalizeAndWriteWav(std::vector<int16_t> &samples,

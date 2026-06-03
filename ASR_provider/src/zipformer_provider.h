@@ -26,6 +26,7 @@ private:
     void keepAliveLoop();
     void processRecording(std::vector<int16_t> samples,
                           const std::string &wavPath,
+                          const std::string &dir,
                           AsrResultCallback onR, AsrErrorCallback onE);
 
     static void normalizeAndWriteWav(std::vector<int16_t> &samples,
