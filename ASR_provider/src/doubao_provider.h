@@ -39,6 +39,7 @@ private:
     std::atomic<bool> sendRunning_{false};
     std::mutex sampleMutex_;
     std::vector<int16_t> samples_;
+    std::vector<int16_t> allSamples_;
 
     // WebSocket (单线程轮询收发)
     void *curl_ = nullptr;

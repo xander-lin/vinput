@@ -128,6 +128,7 @@ void DoubaoAsrProvider::keepAliveLoop() {
             std::lock_guard<std::mutex> lk(sampleMutex_);
             auto *p = reinterpret_cast<int16_t *>(buf);
             samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
+            allSamples_.insert(allSamples_.end(), p, p + sizeof(buf) / 2);
         }
     }
 }
@@ -239,6 +240,7 @@ void DoubaoAsrProvider::start() {
     {
         std::lock_guard<std::mutex> lk(sampleMutex_);
         samples_.clear();
+        allSamples_.clear();
     }
     sendRunning_ = true;
     if (onState_) onState_(true);
@@ -299,9 +301,9 @@ void DoubaoAsrProvider::start() {
         // 保存 WAV
         {
             std::lock_guard<std::mutex> lk(sampleMutex_);
-            writeWav(samples_, tempWavPath_);
+            writeWav(allSamples_, tempWavPath_);
             fprintf(stderr, "Vinput Doubao: saved %zu samples to %s\n",
-                    samples_.size(), tempWavPath_.c_str());
+                    allSamples_.size(), tempWavPath_.c_str());
         }
         if (onState_) onState_(false);
     }).detach();
