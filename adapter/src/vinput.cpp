@@ -190,6 +190,7 @@ private:
     std::unique_ptr<fcitx::EventSourceTime> timer_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
+    fcitx::ICUUID currentUuid_ = {};  // 用于 deactivate 后仍能查找 IC
     int providerIndex_ = 0;
     size_t lastCommittedSize_ = 0; // Doubao 增量追踪
 
@@ -213,6 +214,7 @@ private:
         if (keyEvent.key().sym() == FcitxKey_Caps_Lock) {
             if (timer_ || active_) return;
             currentIC_ = keyEvent.inputContext();
+            currentUuid_ = currentIC_->uuid();
             timer_ = instance_->eventLoop().addTimeEvent(
                 CLOCK_MONOTONIC,
                 fcitx::now(CLOCK_MONOTONIC) + kLongPressUsec, 0,
@@ -358,7 +360,6 @@ private:
     void onAsrResult(const std::string &text, bool isFinal) {
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
-        if (!currentIC_) return;
 
         // Doubao 每次返回完整文本, 只 commit 新增部分
         std::string diff;
@@ -366,18 +367,17 @@ private:
             diff = text.substr(lastCommittedSize_);
             lastCommittedSize_ = text.size();
         }
-        if (isFinal) lastCommittedSize_ = 0;  // 复位
+        if (isFinal) lastCommittedSize_ = 0;
 
         if (diff.empty()) return;
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex_);
-            pendingCommits_.emplace_back(currentIC_->uuid(), diff);
+            pendingCommits_.emplace_back(currentUuid_, diff);
         }
         char c = 1;
         write(wakePipe_[1], &c, 1);
     }
-
     // ASR 错误回调
     void onAsrError(const std::string &error) {
         FCITX_INFO() << "Vinput ASR error: " << error;
