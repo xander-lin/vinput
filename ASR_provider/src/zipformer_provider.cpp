@@ -22,6 +22,23 @@ static std::string expandPath(const std::string &p) {
 ZipformerAsrProvider::ZipformerAsrProvider()
     : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {
     tempWavPath_ = "/tmp/vinput_zip_" + std::to_string(getpid()) + ".wav";
+
+    // 后台线程预加载模型，避免阻塞 fcitx5 事件循环导致 SIGSEGV
+    auto dir = expandPath(modelDir_);
+    loadThread_ = std::thread([this, dir]() {
+        sherpa_onnx::cxx::OnlineRecognizerConfig config;
+        config.model_config.transducer.encoder = dir + "/encoder-epoch-99-avg-1.onnx";
+        config.model_config.transducer.decoder = dir + "/decoder-epoch-99-avg-1.onnx";
+        config.model_config.transducer.joiner = dir + "/joiner-epoch-99-avg-1.onnx";
+        config.model_config.tokens = dir + "/tokens.txt";
+        config.model_config.num_threads = 4;
+        config.model_config.provider = "cpu";
+
+        recognizer_ = new sherpa_onnx::cxx::OnlineRecognizer(
+            sherpa_onnx::cxx::OnlineRecognizer::Create(config));
+        loaded_ = true;
+        fprintf(stderr, "Vinput: Zipformer model loaded\n");
+    });
 }
 
 ZipformerAsrProvider::~ZipformerAsrProvider() {
@@ -40,24 +57,15 @@ void ZipformerAsrProvider::setConfig(const std::string &key,
 void ZipformerAsrProvider::start() {
     if (recording_) return;
 
-    // 模型只加载一次 (static, 所有实例共享)
-    static void *sharedRecognizer = nullptr;
-    if (!sharedRecognizer) {
-        auto dir = expandPath(modelDir_);
-
-        sherpa_onnx::cxx::OnlineRecognizerConfig config;
-        config.model_config.transducer.encoder = dir + "/encoder-epoch-99-avg-1.onnx";
-        config.model_config.transducer.decoder = dir + "/decoder-epoch-99-avg-1.onnx";
-        config.model_config.transducer.joiner = dir + "/joiner-epoch-99-avg-1.onnx";
-        config.model_config.tokens = dir + "/tokens.txt";
-        config.model_config.num_threads = 4;
-        config.model_config.provider = "cpu";
-
-        sharedRecognizer = new sherpa_onnx::cxx::OnlineRecognizer(
-            sherpa_onnx::cxx::OnlineRecognizer::Create(config));
-        fprintf(stderr, "Vinput: Zipformer model loaded\n");
+    // 等待模型加载完成
+    if (!loaded_) {
+        fprintf(stderr, "Vinput: waiting for Zipformer model to load...\n");
+        if (loadThread_.joinable()) loadThread_.join();
     }
-    recognizer_ = sharedRecognizer;
+    if (!recognizer_) {
+        fprintf(stderr, "Vinput: Zipformer model failed to load\n");
+        return;
+    }
 
     recording_ = true;
     if (onState_) onState_(true);
