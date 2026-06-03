@@ -25,6 +25,8 @@
 #include <mutex>
 #include <vector>
 #include <spawn.h>
+#include <cstdio>
+#include <cstring>
 
 // Vinput ASR provider 接口
 #include "asr_provider.h"
@@ -77,14 +79,56 @@ public:
                     std::lock_guard<std::mutex> lk(pendingMutex_);
                     batch.swap(pendingCommits_);
                 }
-                for (auto &pc : batch) {
-                    auto *ic = instance_->inputContextManager().findByUUID(pc.uuid);
-                    if (!ic) continue;
-                    if (!pc.text.empty()) {
-                        ic->commitString(pc.text);
+                if (capturedWinId_.empty() || batch.empty()) {
+                    // 无窗口绑定: 直接提交到当前焦点窗口
+                    for (auto &pc : batch) {
+                        auto *ic = instance_->mostRecentInputContext();
+                        if (!ic) {
+                            FCITX_INFO() << "Vinput [commit] no focused ic, drop";
+                            continue;
+                        }
+                        FCITX_INFO() << "Vinput [commit] ic=" << ic
+                                     << " program=" << ic->program()
+                                     << " text=\"" << pc.text << "\"";
+                        if (!pc.text.empty()) ic->commitString(pc.text);
                     }
-                    FCITX_INFO() << "Vinput commit: \"" << pc.text << "\"";
+                    return true;
                 }
+
+                // niri 窗口绑定: 先切换到捕获窗口 → 提交 → 恢复
+                auto capturedId = capturedWinId_;
+                auto restoreId = niriGetFocusedId();
+                if (restoreId == capturedId) {
+                    capturedId.clear();  // 已在目标窗口, 无需跳过
+                }
+                FCITX_INFO() << "Vinput [niri] captured=" << capturedId
+                             << " restore=" << restoreId;
+
+                if (!capturedId.empty()) {
+                    niriFocusWindow(capturedId);
+                }
+
+                // 等合成器处理焦点切换后提交 (150ms)
+                auto commitTime = fcitx::now(CLOCK_MONOTONIC) + 150000;
+                commitTimer_ = instance_->eventLoop().addTimeEvent(
+                    CLOCK_MONOTONIC, commitTime, 0,
+                    [this, batch = std::move(batch), restoreId, capturedId](
+                        fcitx::EventSourceTime *, uint64_t) mutable {
+                        auto *ic = instance_->mostRecentInputContext();
+                        if (ic) {
+                            for (auto &pc : batch) {
+                                FCITX_INFO() << "Vinput [niri-commit] ic=" << ic
+                                             << " program=" << ic->program()
+                                             << " text=\"" << pc.text << "\"";
+                                if (!pc.text.empty()) ic->commitString(pc.text);
+                            }
+                        }
+                        // 恢复原窗口焦点
+                        if (!restoreId.empty() && restoreId != capturedId) {
+                            niriFocusWindow(restoreId);
+                        }
+                        return false;
+                    });
                 return true;
             });
 
@@ -200,7 +244,11 @@ private:
     }
 
     // 状态
-    bool active_ = false;
+    bool active_ = false;               // 语音录音中
+    bool switchActive_ = false;         // Ctrl+CapsLock 切换模式
+    int revertDebounce_ = 0;            // uinput CapsLock 反弹去抖计数
+    std::string capturedWinId_;         // niri window id, 录音激活时捕获
+    std::unique_ptr<fcitx::EventSourceTime> commitTimer_;
     std::unique_ptr<fcitx::EventSourceTime> timer_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
@@ -208,14 +256,83 @@ private:
     std::string lastPreeditText_;       // deactivate 时 commit 用
     int providerIndex_ = 0;
 
+    // 从 keyEvent 提取切换方向, 0 表示非方向键
+    static int switchDirection(const fcitx::KeyEvent &keyEvent) {
+        switch (keyEvent.key().sym()) {
+            case FcitxKey_Left:  case FcitxKey_h: return -1;
+            case FcitxKey_Right: case FcitxKey_l: return  1;
+            default: return 0;
+        }
+    }
+
+    // 仅切换 provider index + 通知 + 持久化, 不创建/启动 ASR 实例
+    void doProviderSwitch(int direction) {
+        auto list = vinput::AsrProviderRegistry::instance().listFactories();
+        if (list.empty()) return;
+
+        providerIndex_ = (providerIndex_ + direction + (int)list.size()) % (int)list.size();
+        const auto &[nextId, nextName] = list[providerIndex_];
+
+        auto total = (int)list.size();
+        auto msg = nextName + " (" + std::to_string(providerIndex_ + 1)
+                   + "/" + std::to_string(total) + ")";
+        notifications()->call<fcitx::INotifications::sendNotification>(
+            "fcitx5-vinput", 0, "fcitx-vinput",
+            "Vinput", msg,
+            std::vector<std::string>{}, 2000, nullptr, nullptr);
+
+        FCITX_INFO() << "Vinput switch ASR provider: " << nextName;
+        config_.defaultProvider.setValue(nextId);
+        safeSaveAsIni(config_, confFile);
+        playSound("switch");
+    }
+
+    // niri IPC: 获取当前焦点窗口 ID
+    std::string niriGetFocusedId() {
+        FILE *f = popen("niri msg focused-window 2>/dev/null", "r");
+        if (!f) return "";
+        char buf[256] = {};
+        fread(buf, 1, sizeof(buf) - 1, f);
+        pclose(f);
+        // 解析 "Window ID 11:" 或 "Window ID 11: (focused)"
+        const char *p = strstr(buf, "Window ID ");
+        if (!p) return "";
+        p += 10;
+        const char *end = strchr(p, ':');
+        if (!end) return "";
+        return std::string(p, end - p);
+    }
+
+    // niri IPC: 聚焦指定窗口
+    void niriFocusWindow(const std::string &id) {
+        if (id.empty()) return;
+        std::string cmd = "niri msg action focus-window --id " + id;
+        pid_t pid;
+        const char *argv[] = {"sh", "-c", cmd.c_str(), nullptr};
+        posix_spawn(&pid, "/bin/sh", nullptr, nullptr,
+                    (char *const *)argv, environ);
+    }
+
     // 键盘事件回调
     void onKeyEvent(fcitx::KeyEvent &keyEvent) {
-        if (!active_ && keyEvent.key().sym() != FcitxKey_Caps_Lock) return;
+        bool capsLock = (keyEvent.key().sym() == FcitxKey_Caps_Lock);
+
+        // 放行 CapsLock; 切换模式或录音中放行所有键
+        if (!capsLock && !active_ && !switchActive_ && !timer_) return;
 
         if (keyEvent.isRelease()) {
-            if (keyEvent.key().sym() == FcitxKey_Caps_Lock) {
+            if (capsLock) {
+                if (revertDebounce_ > 0) {
+                    revertDebounce_--;
+                    return;
+                }
                 if (active_) {
                     onDeactivate();
+                } else if (switchActive_) {
+                    switchActive_ = false;
+                    revertDebounce_ = 2;
+                    playSound("deactivate");
+                    revertCapsLock();
                 } else {
                     timer_.reset();
                 }
@@ -225,79 +342,61 @@ private:
         }
 
         // ---- 按下事件 ----
-        if (keyEvent.key().sym() == FcitxKey_Caps_Lock) {
-            if (timer_ || active_) return;
+        if (capsLock) {
+            if (revertDebounce_ > 0) {
+                revertDebounce_--;
+                return;
+            }
+            if (timer_ || active_ || switchActive_) return;
             currentIC_ = keyEvent.inputContext();
-            currentUuid_ = currentIC_->uuid();
-            timer_ = instance_->eventLoop().addTimeEvent(
-                CLOCK_MONOTONIC,
-                fcitx::now(CLOCK_MONOTONIC) + kLongPressUsec, 0,
-                [this](fcitx::EventSourceTime *, uint64_t) {
-                    onActivate();
-                    return false;
-                });
+            if (currentIC_) {
+                currentUuid_ = currentIC_->uuid();
+                FCITX_INFO() << "Vinput [press] ic=" << currentIC_
+                             << " program=" << currentIC_->program()
+                             << " frontend=" << currentIC_->frontendName();
+            } else {
+                FCITX_INFO() << "Vinput [press] no input context";
+            }
+
+            bool ctrlHeld = (keyEvent.key().states().toInteger() & (uint32_t)fcitx::KeyState::Ctrl) != 0;
+
+            if (ctrlHeld) {
+                // Ctrl+CapsLock: 进入切换模式 (不启用录音)
+                switchActive_ = true;
+                FCITX_INFO() << "Vinput switch mode active";
+
+                auto list = vinput::AsrProviderRegistry::instance().listFactories();
+                if (!list.empty()) {
+                    auto msg = std::string("Switch model (")
+                               + std::to_string(providerIndex_ + 1)
+                               + "/" + std::to_string((int)list.size()) + ")";
+                    notifications()->call<fcitx::INotifications::sendNotification>(
+                        "fcitx5-vinput", 0, "fcitx-vinput",
+                        "Vinput", msg,
+                        std::vector<std::string>{}, 2000, nullptr, nullptr);
+                }
+            } else {
+                // 普通 CapsLock: 启动长按计时器
+                timer_ = instance_->eventLoop().addTimeEvent(
+                    CLOCK_MONOTONIC,
+                    fcitx::now(CLOCK_MONOTONIC) + kLongPressUsec, 0,
+                    [this](fcitx::EventSourceTime *, uint64_t) {
+                        onActivate();
+                        return false;
+                    });
+            }
             keyEvent.filterAndAccept();
             return;
         }
 
-        // 激活状态下, 处理左右方向键 / h/l 切换 ASR 后端
-        if (active_) {
-            if (switchProvider(keyEvent)) return;
+        // 切换模式下: 箭头/h/l 键切换模型 (可多次)
+        if (switchActive_) {
+            int dir = switchDirection(keyEvent);
+            if (dir != 0) {
+                doProviderSwitch(dir);
+                keyEvent.filterAndAccept();
+            }
         }
-    }
-
-    // 切换 ASR 后端
-    bool switchProvider(fcitx::KeyEvent &keyEvent) {
-        int sym = keyEvent.key().sym();
-
-        int direction = 0;
-        if (sym == FcitxKey_Left || sym == FcitxKey_h) {
-            direction = -1;
-        } else if (sym == FcitxKey_Right || sym == FcitxKey_l) {
-            direction = 1;
-        } else {
-            return false;
-        }
-
-        auto list = vinput::AsrProviderRegistry::instance().listFactories();
-        if (list.empty()) return false;
-
-        providerIndex_ = (providerIndex_ + direction + (int)list.size()) % (int)list.size();
-        const auto &[nextId, nextName] = list[providerIndex_];
-
-        // 通知用户即将切换到哪个后端 (在实际停止/创建之前)
-        auto total = (int)list.size();
-        auto msg = nextName + " (" + std::to_string(providerIndex_ + 1)
-                   + "/" + std::to_string(total) + ")";
-        notifications()->call<fcitx::INotifications::sendNotification>(
-            "fcitx5-vinput", 0, "fcitx-vinput",
-            "Vinput", msg,
-            std::vector<std::string>{}, 2000, nullptr, nullptr);
-
-        // 停止当前后端, 创建新后端
-        if (asr_) {
-            asr_->stop();
-            asr_.reset();
-        }
-
-        FCITX_INFO() << "Vinput switch ASR provider: " << nextName;
-        asr_ = vinput::AsrProviderRegistry::instance().create(nextId);
-
-        if (asr_) {
-            applyAsrConfig();
-            setupAsrCallbacks();
-            asr_->start();
-        }
-
-        // 保存为默认
-        config_.defaultProvider.setValue(nextId);
-        safeSaveAsIni(config_, confFile);
-
-        // 切换音: 短促中音
-        playSound("switch");
-
-        keyEvent.filterAndAccept();
-        return true;
     }
 
     // 长按 500ms 后触发
@@ -305,6 +404,23 @@ private:
         timer_.reset();
         active_ = true;
         FCITX_INFO() << "Vinput activated";
+
+        // 重新捕获当前焦点窗口 (比 KeyEvent::inputContext 更可靠)
+        auto *ic = instance_->mostRecentInputContext();
+        if (ic) {
+            currentIC_ = ic;
+            currentUuid_ = ic->uuid();
+            FCITX_INFO() << "Vinput [activate] ic=" << ic
+                         << " program=" << ic->program()
+                         << " frontend=" << ic->frontendName();
+        } else {
+            FCITX_INFO() << "Vinput [activate] no input context";
+            return;
+        }
+
+        // niri 窗口绑定: 记录当前窗口 ID
+        capturedWinId_ = niriGetFocusedId();
+        FCITX_INFO() << "Vinput [activate] niri window=" << capturedWinId_;
 
         auto list = vinput::AsrProviderRegistry::instance().listFactories();
         if (list.empty()) {
@@ -379,6 +495,7 @@ private:
 
         playSound("deactivate");  // 结束音: 低音
         // 松键后还原 CapsLock (按下时硬件层已切换, 现在补一个假按键还原)
+        revertDebounce_ = 2;
         revertCapsLock();
     }
 

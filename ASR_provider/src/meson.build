@@ -7,6 +7,8 @@ asr_provider_lib = static_library('asr_provider',
   'zipformer_provider.cpp',
   'doubao_provider.h',
   'doubao_provider.cpp',
+  'fire_red_provider.h',
+  'fire_red_provider.cpp',
   install: false)
 
 asr_provider_dep = declare_dependency(

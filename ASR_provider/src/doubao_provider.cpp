@@ -276,6 +276,8 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
     }
 
     std::thread([=]() {
+        struct Cleanup { std::string p; ~Cleanup() { unlink(p.c_str()); } } _wav{wavPath};
+
         std::ifstream wf(wavPath, std::ios::binary);
         if (!wf) {
             if (onE) onE("Doubao: failed to read WAV");
