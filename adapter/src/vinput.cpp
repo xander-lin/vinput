@@ -23,7 +23,6 @@
 #include <string.h>
 #include <mutex>
 #include <vector>
-#include <cmath>
 #include <thread>
 #include <pulse/simple.h>
 #include <pulse/error.h>
@@ -31,6 +30,14 @@
 // Vinput ASR provider 接口
 #include "asr_provider.h"
 #include "mock_provider.h"         // 确保 Mock 后端被链接并自动注册
+
+static std::string expandPath(const std::string &p) {
+    if (!p.empty() && p[0] == '~') {
+        const char *h = getenv("HOME");
+        if (h) return std::string(h) + p.substr(1);
+    }
+    return p;
+}
 
 // 配置: 定义 addon 的可配置选项
 FCITX_CONFIGURATION(
@@ -159,25 +166,57 @@ private:
     std::mutex pendingMutex_;
     std::vector<std::pair<fcitx::ICUUID, std::string>> pendingCommits_;
 
-    // 提示音: 用 PulseAudio 生成正弦波短音
-    static void beep(double freq, int durationMs, double volume = 0.3) {
-        std::thread([=]() {
+    // 提示音: 播放预生成的 WAV
+    static void playSound(const std::string &name) {
+        std::thread([name]() {
+            auto path = expandPath("~/.local/share/vinput/sounds/" + name + ".wav");
+            FILE *f = fopen(path.c_str(), "rb");
+            if (!f) return;
+
+            // skip RIFF header to find fmt/data chunks
+            char id[5] = {};
+            uint32_t size;
+            uint16_t audioFormat = 0, channels = 0;
+            uint32_t sampleRate = 0, byteRate = 0;
+            uint16_t blockAlign = 0, bitsPerSample = 0;
+            std::vector<uint8_t> pcm;
+
+            fread(id, 1, 4, f);  // "RIFF"
+            fread(&size, 4, 1, f);
+            fread(id, 1, 4, f);  // "WAVE"
+
+            while (fread(id, 1, 4, f) == 4) {
+                fread(&size, 4, 1, f);
+                if (strncmp(id, "fmt ", 4) == 0) {
+                    fread(&audioFormat, 2, 1, f);
+                    fread(&channels, 2, 1, f);
+                    fread(&sampleRate, 4, 1, f);
+                    fread(&byteRate, 4, 1, f);
+                    fread(&blockAlign, 2, 1, f);
+                    fread(&bitsPerSample, 2, 1, f);
+                    if (size > 16) fseek(f, size - 16, SEEK_CUR);
+                } else if (strncmp(id, "data", 4) == 0) {
+                    pcm.resize(size);
+                    fread(pcm.data(), 1, size, f);
+                    break;
+                } else {
+                    fseek(f, size, SEEK_CUR);
+                }
+            }
+            fclose(f);
+            if (pcm.empty()) return;
+
             pa_sample_spec ss;
-            ss.format = PA_SAMPLE_S16LE;
-            ss.rate = 16000;
-            ss.channels = 1;
+            ss.format = bitsPerSample == 16 ? PA_SAMPLE_S16LE : PA_SAMPLE_S16LE;
+            ss.rate = sampleRate;
+            ss.channels = channels;
 
             int error = 0;
-            auto *pa = pa_simple_new(nullptr, "vinput-beep", PA_STREAM_PLAYBACK,
-                                     nullptr, "beep", &ss, nullptr, nullptr, &error);
+            auto *pa = pa_simple_new(nullptr, "vinput-sound", PA_STREAM_PLAYBACK,
+                                     nullptr, "sound", &ss, nullptr, nullptr, &error);
             if (!pa) return;
 
-            int n = 16000 * durationMs / 1000;
-            std::vector<int16_t> wav(n);
-            for (int i = 0; i < n; i++)
-                wav[i] = (int16_t)(32767 * volume * std::sin(2 * M_PI * freq * i / 16000.0));
-
-            pa_simple_write(pa, wav.data(), n * 2, &error);
+            pa_simple_write(pa, pcm.data(), pcm.size(), &error);
             pa_simple_drain(pa, &error);
             pa_simple_free(pa);
         }).detach();
@@ -266,7 +305,7 @@ private:
         safeSaveAsIni(config_, confFile);
 
         // 切换音: 短促中音
-        beep(660, 50);
+        playSound("switch");
 
         keyEvent.filterAndAccept();
         return true;
@@ -300,7 +339,7 @@ private:
             applyAsrConfig();
             setupAsrCallbacks();
 
-            beep(880, 100);  // 激活音: 高音
+            playSound("activate");  // 激活音: 高音
             asr_->start();
         }
     }
@@ -337,7 +376,7 @@ private:
         }
         currentIC_ = nullptr;
 
-        beep(440, 100);  // 结束音: 低音
+        playSound("deactivate");  // 结束音: 低音
         // 松键后还原 CapsLock (按下时硬件层已切换, 现在补一个假按键还原)
         revertCapsLock();
     }
