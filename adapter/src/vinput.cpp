@@ -23,9 +23,7 @@
 #include <string.h>
 #include <mutex>
 #include <vector>
-#include <thread>
-#include <pulse/simple.h>
-#include <pulse/error.h>
+#include <spawn.h>
 
 // Vinput ASR provider 接口
 #include "asr_provider.h"
@@ -173,60 +171,15 @@ private:
     // 运行时依赖: notifications addon (仅用于切换显示)
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
 
-    // 提示音: 播放预生成的 WAV
+    // 提示音: 用系统命令播放 WAV (避免 PA 多线程竞争)
     static void playSound(const std::string &name) {
-        std::thread([name]() {
-            auto path = expandPath("~/.local/share/vinput/sounds/" + name + ".wav");
-            FILE *f = fopen(path.c_str(), "rb");
-            if (!f) return;
-
-            // skip RIFF header to find fmt/data chunks
-            char id[5] = {};
-            uint32_t size;
-            uint16_t audioFormat = 0, channels = 0;
-            uint32_t sampleRate = 0, byteRate = 0;
-            uint16_t blockAlign = 0, bitsPerSample = 0;
-            std::vector<uint8_t> pcm;
-
-            fread(id, 1, 4, f);  // "RIFF"
-            fread(&size, 4, 1, f);
-            fread(id, 1, 4, f);  // "WAVE"
-
-            while (fread(id, 1, 4, f) == 4) {
-                fread(&size, 4, 1, f);
-                if (strncmp(id, "fmt ", 4) == 0) {
-                    fread(&audioFormat, 2, 1, f);
-                    fread(&channels, 2, 1, f);
-                    fread(&sampleRate, 4, 1, f);
-                    fread(&byteRate, 4, 1, f);
-                    fread(&blockAlign, 2, 1, f);
-                    fread(&bitsPerSample, 2, 1, f);
-                    if (size > 16) fseek(f, size - 16, SEEK_CUR);
-                } else if (strncmp(id, "data", 4) == 0) {
-                    pcm.resize(size);
-                    fread(pcm.data(), 1, size, f);
-                    break;
-                } else {
-                    fseek(f, size, SEEK_CUR);
-                }
-            }
-            fclose(f);
-            if (pcm.empty()) return;
-
-            pa_sample_spec ss;
-            ss.format = bitsPerSample == 16 ? PA_SAMPLE_S16LE : PA_SAMPLE_S16LE;
-            ss.rate = sampleRate;
-            ss.channels = channels;
-
-            int error = 0;
-            auto *pa = pa_simple_new(nullptr, "vinput-sound", PA_STREAM_PLAYBACK,
-                                     nullptr, "sound", &ss, nullptr, nullptr, &error);
-            if (!pa) return;
-
-            pa_simple_write(pa, pcm.data(), pcm.size(), &error);
-            pa_simple_drain(pa, &error);
-            pa_simple_free(pa);
-        }).detach();
+        auto path = expandPath("~/.local/share/vinput/sounds/" + name + ".wav");
+        if (access(path.c_str(), R_OK) != 0) return;
+        pid_t pid;
+        const char *argv[] = {"paplay", path.c_str(), nullptr};
+        if (posix_spawn(&pid, "/usr/bin/paplay", nullptr, nullptr,
+                        (char *const *)argv, nullptr) != 0) return;
+        // 不 wait: 让子进程自行结束, 僵尸由 fcitx5 主进程 SIGCHLD 处理
     }
 
     // 状态
