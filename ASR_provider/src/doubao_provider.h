@@ -3,8 +3,12 @@
 #include <string>
 #include <atomic>
 #include <vector>
+#include <thread>
+#include <mutex>
 #include <cstdint>
 #include "asr_provider.h"
+
+struct pa_simple;
 
 namespace vinput {
 
@@ -18,18 +22,21 @@ public:
     void setConfig(const std::string &key, const std::string &value) override;
 
 private:
-    void recordAndSend();
-    void readResults();
-    void writeWav(const std::vector<int16_t> &samples, const std::string &path);
-
     std::string scriptPath_;
     std::string tempWavPath_;
-    std::atomic<bool> running_{false};
-    int childStdin_ = -1;
-    int childStdout_ = -1;
+
+    // 常驻录音流 (单线程 keep-alive + 录音发送)
+    pa_simple *paStream_ = nullptr;
+    std::thread keepAliveThread_;
+    std::atomic<bool> keepAliveRunning_{true};
+    std::atomic<bool> sendRunning_{false};
+    std::mutex sendMutex_;
+    int sendFd_ = -1;
+    std::vector<int16_t> allSamples_;
+
+    // 子进程
+    int recvFd_ = -1;
     pid_t childPid_ = 0;
-    std::string partialText_;
-    std::string finalText_;
 };
 
 class DoubaoAsrProviderFactory : public IAsrProviderFactory {

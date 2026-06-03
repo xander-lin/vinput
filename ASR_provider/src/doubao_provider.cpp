@@ -7,14 +7,11 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
-#include <csignal>
 #include <ctime>
 #include <string>
 #include <vector>
 #include <thread>
 #include <mutex>
-#include <condition_variable>
-#include <chrono>
 
 namespace vinput {
 
@@ -30,12 +27,49 @@ DoubaoAsrProvider::DoubaoAsrProvider() {
     scriptPath_ = expandPath("~/.local/share/vinput/scripts/doubao_asr.py");
     tempWavPath_ = "/tmp/vinput_doubao_" + std::to_string(getpid()) + "_"
                    + std::to_string(time(nullptr)) + ".wav";
+
+    // 常驻录音流 + 单线程同时做 keep-alive 和录音发送
+    pa_sample_spec ss;
+    ss.format = PA_SAMPLE_S16LE;
+    ss.rate = 16000;
+    ss.channels = 1;
+    int error = 0;
+    paStream_ = pa_simple_new(nullptr, "vinput-doubao-keep",
+                              PA_STREAM_RECORD, nullptr, "voice",
+                              &ss, nullptr, nullptr, &error);
+    if (!paStream_) {
+        fprintf(stderr, "Vinput Doubao: keep-alive PA error: %s\n",
+                pa_strerror(error));
+        return;
+    }
+    fprintf(stderr, "Vinput Doubao: keep-alive stream started\n");
+
+    keepAliveThread_ = std::thread([this]() {
+        uint8_t buf[6400];  // 200ms chunks
+        int err = 0;
+        while (keepAliveRunning_) {
+            if (pa_simple_read(paStream_, buf, sizeof(buf), &err) < 0)
+                break;
+            if (sendRunning_) {
+                std::lock_guard<std::mutex> lk(sendMutex_);
+                if (sendFd_ >= 0)
+                    write(sendFd_, buf, sizeof(buf));
+                auto *p = reinterpret_cast<int16_t *>(buf);
+                allSamples_.insert(allSamples_.end(), p, p + sizeof(buf) / 2);
+            }
+        }
+    });
 }
 
 DoubaoAsrProvider::~DoubaoAsrProvider() {
-    // 关闭管道让子进程自然结束
-    if (childStdin_ >= 0) close(childStdin_);
-    if (childStdout_ >= 0) close(childStdout_);
+    keepAliveRunning_ = false;
+    if (keepAliveThread_.joinable()) keepAliveThread_.join();
+    if (paStream_) {
+        pa_simple_free(paStream_);
+        paStream_ = nullptr;
+    }
+    if (sendFd_ >= 0) close(sendFd_);
+    if (recvFd_ >= 0) close(recvFd_);
 }
 
 void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &value) {
@@ -43,187 +77,115 @@ void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &val
 }
 
 void DoubaoAsrProvider::start() {
-    if (running_) return;
-    running_ = true;
-    if (onState_) onState_(true);
+    if (sendRunning_) return;
+    allSamples_.clear();
 
-    // 创建管道: stdin(写) → child, stdout(读) ← child
+    // 创建管道
     int stdinPipe[2], stdoutPipe[2];
     if (pipe(stdinPipe) < 0 || pipe(stdoutPipe) < 0) {
         if (onError_) onError_("Doubao: pipe failed");
-        running_ = false;
         return;
     }
 
     pid_t pid = fork();
     if (pid < 0) {
-        if (onError_) onError_("Doubao: fork failed");
         close(stdinPipe[0]); close(stdinPipe[1]);
         close(stdoutPipe[0]); close(stdoutPipe[1]);
-        running_ = false;
         return;
     }
 
     if (pid == 0) {
-        // --- child: 运行 Python 脚本 ---
         dup2(stdinPipe[0], STDIN_FILENO);
         dup2(stdoutPipe[1], STDOUT_FILENO);
         close(stdinPipe[0]); close(stdinPipe[1]);
         close(stdoutPipe[0]); close(stdoutPipe[1]);
-
         execl("/usr/bin/python3", "python3", scriptPath_.c_str(), nullptr);
         _exit(127);
     }
 
-    // --- parent ---
     close(stdinPipe[0]);
     close(stdoutPipe[1]);
-    childStdin_ = stdinPipe[1];
-    childStdout_ = stdoutPipe[0];
+    sendFd_ = stdinPipe[1];
+    recvFd_ = stdoutPipe[0];
     childPid_ = pid;
 
-    // 结果读取线程
-    std::thread resultReader([this]() { readResults(); });
-    resultReader.detach();
+    sendRunning_ = true;
+    if (onState_) onState_(true);
 
-    // 录音发送线程
-    std::thread sender([this]() { recordAndSend(); });
-    sender.detach();
+    // 结果读取线程
+    std::thread([this]() {
+        FILE *f = fdopen(recvFd_, "r");
+        if (!f) return;
+
+        char line[16384];
+        while (sendRunning_ && fgets(line, sizeof(line), f)) {
+            const char *ts = strstr(line, "\"text\"");
+            const char *fs = strstr(line, "\"is_final\"");
+            const char *es = strstr(line, "\"error\"");
+
+            if (es) {
+                fprintf(stderr, "Vinput Doubao error: %s\n", line);
+                if (onError_) onError_("Doubao: " + std::string(line));
+                continue;
+            }
+            if (!ts) continue;
+
+            ts = strchr(ts + 7, '"');
+            if (!ts) continue;
+            ts++;
+            const char *te = strchr(ts, '"');
+            if (!te) continue;
+            std::string text(ts, te - ts);
+
+            bool isFinal = false;
+            if (fs) {
+                fs = strchr(fs + 10, ':');
+                if (fs) {
+                    fs++;
+                    while (*fs == ' ') fs++;
+                    isFinal = (*fs == 't' || *fs == 'T');
+                }
+            }
+
+            fprintf(stderr, "Vinput Doubao: text=\"%s\" final=%d\n",
+                    text.c_str(), isFinal);
+            if (onResult_ && !text.empty())
+                onResult_(text, isFinal);
+            if (isFinal) break;
+        }
+        fclose(f);
+        recvFd_ = -1;
+        if (childPid_) { waitpid(childPid_, nullptr, 0); childPid_ = 0; }
+        if (onState_) onState_(false);
+    }).detach();
 }
 
 void DoubaoAsrProvider::stop() {
-    running_ = false;
-}
-
-void DoubaoAsrProvider::recordAndSend() {
-    pa_sample_spec ss;
-    ss.format = PA_SAMPLE_S16LE;
-    ss.rate = 16000;
-    ss.channels = 1;
-
-    int error = 0;
-    auto *pa = pa_simple_new(nullptr, "vinput-doubao", PA_STREAM_RECORD,
-                             nullptr, "voice", &ss, nullptr, nullptr, &error);
-    if (!pa) {
-        fprintf(stderr, "Vinput Doubao: PA error: %s\n", pa_strerror(error));
-        if (onError_) onError_("Doubao: microphone error");
-        close(childStdin_);
-        return;
+    sendRunning_ = false;
+    // 关闭写入端，让 Python 脚本收到 EOF 后发最后一包
+    {
+        std::lock_guard<std::mutex> lk(sendMutex_);
+        if (sendFd_ >= 0) { close(sendFd_); sendFd_ = -1; }
     }
-
-    // 200ms 音频 = 16000 * 0.2 * 2 = 6400 bytes
-    constexpr int kChunkBytes = 6400;
-    std::vector<int16_t> allSamples;
-    uint8_t buf[kChunkBytes];
-
-    while (running_) {
-        if (pa_simple_read(pa, buf, kChunkBytes, &error) < 0) break;
-        write(childStdin_, buf, kChunkBytes);
-        auto *p = reinterpret_cast<int16_t *>(buf);
-        allSamples.insert(allSamples.end(), p, p + kChunkBytes / 2);
-    }
-
-    pa_simple_free(pa);
-    close(childStdin_);  // EOF → Python 脚本发送最后一包
-
-    writeWav(allSamples, tempWavPath_);
-    fprintf(stderr, "Vinput Doubao: recorded %zu samples to %s\n",
-            allSamples.size(), tempWavPath_.c_str());
-}
-
-void DoubaoAsrProvider::readResults() {
-    FILE *f = fdopen(childStdout_, "r");
-    if (!f) return;
-
-    char line[16384];
-    while (fgets(line, sizeof(line), f)) {
-        // 解析 JSONL: {"text": "...", "is_final": true/false}
-        auto *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-
-        // 简单解析: 找 "text" 和 "is_final"
-        const char *textStart = strstr(p, "\"text\"");
-        const char *finalStart = strstr(p, "\"is_final\"");
-
-        if (!textStart) {
-            // 可能是错误: {"error": "..."}
-            if (strstr(p, "\"error\"")) {
-                fprintf(stderr, "Vinput Doubao error: %s\n", p);
-                if (onError_) onError_("Doubao: " + std::string(p));
-            }
-            continue;
+    // 保存 WAV
+    if (!allSamples_.empty()) {
+        FILE *f = fopen(tempWavPath_.c_str(), "wb");
+        if (f) {
+            long ds = (long)allSamples_.size() * 2;
+            fwrite("RIFF", 1, 4, f);
+            uint32_t cs = 36 + (uint32_t)ds; fwrite(&cs, 4, 1, f);
+            fwrite("WAVE", 1, 4, f); fwrite("fmt ", 1, 4, f);
+            uint32_t s1=16, sr=16000, br=32000;
+            uint16_t ff=1, ch=1, bps=16, ba=2;
+            fwrite(&s1,4,1,f); fwrite(&ff,2,1,f); fwrite(&ch,2,1,f);
+            fwrite(&sr,4,1,f); fwrite(&br,4,1,f); fwrite(&ba,2,1,f); fwrite(&bps,2,1,f);
+            fwrite("data",1,4,f); fwrite(&ds,4,1,f);
+            fwrite(allSamples_.data(), 2, allSamples_.size(), f);
+            fclose(f);
+            fprintf(stderr, "Vinput Doubao: saved %zu samples to %s\n",
+                    allSamples_.size(), tempWavPath_.c_str());
         }
-
-        // 提取 text
-        textStart = strchr(textStart + 7, '"');
-        if (!textStart) continue;
-        textStart++;
-        const char *textEnd = strchr(textStart, '"');
-        if (!textEnd) continue;
-        std::string text(textStart, textEnd - textStart);
-
-        bool isFinal = false;
-        if (finalStart) {
-            finalStart = strchr(finalStart + 10, ':');
-            if (finalStart) {
-                finalStart++;
-                while (*finalStart == ' ' || *finalStart == '\t') finalStart++;
-                isFinal = (*finalStart == 't' || *finalStart == 'T');
-            }
-        }
-
-        fprintf(stderr, "Vinput Doubao: text=\"%s\" final=%d\n",
-                text.c_str(), isFinal);
-
-        if (!text.empty()) {
-            if (isFinal) finalText_ = text;
-            else partialText_ = text;
-
-            if (onResult_) {
-                if (isFinal) {
-                    onResult_(text, true);
-                } else {
-                    onResult_(text, false);
-                }
-            }
-        }
-
-        if (isFinal) break;
     }
-
-    fclose(f);
-    childStdout_ = -1;
-
-    if (childPid_) {
-        waitpid(childPid_, nullptr, 0);
-        childPid_ = 0;
-    }
-    if (onState_) onState_(false);
-    running_ = false;
-}
-
-void DoubaoAsrProvider::writeWav(const std::vector<int16_t> &samples,
-                                  const std::string &path) {
-    FILE *f = fopen(path.c_str(), "wb");
-    if (!f) return;
-
-    long dataSize = (long)samples.size() * 2;
-    fwrite("RIFF", 1, 4, f);
-    uint32_t chunkSize = 36 + (uint32_t)dataSize;
-    fwrite(&chunkSize, 4, 1, f);
-    fwrite("WAVE", 1, 4, f);
-    fwrite("fmt ", 1, 4, f);
-    uint32_t sub1 = 16, sr = 16000, br = 32000;
-    uint16_t fmt = 1, ch = 1, bps = 16, ba = 2;
-    fwrite(&sub1, 4, 1, f); fwrite(&fmt, 2, 1, f);
-    fwrite(&ch, 2, 1, f); fwrite(&sr, 4, 1, f);
-    fwrite(&br, 4, 1, f); fwrite(&ba, 2, 1, f);
-    fwrite(&bps, 2, 1, f);
-    fwrite("data", 1, 4, f);
-    uint32_t ds = (uint32_t)dataSize;
-    fwrite(&ds, 4, 1, f);
-    fwrite(samples.data(), 2, samples.size(), f);
-    fclose(f);
 }
 
 std::unique_ptr<IAsrProvider> DoubaoAsrProviderFactory::create() {
