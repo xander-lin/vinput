@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <ctime>
 #include <ebur128.h>
 #include <string>
 #include <vector>
@@ -23,7 +24,8 @@ static std::string expandPath(const std::string &p) {
 
 ZipformerAsrProvider::ZipformerAsrProvider()
     : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {
-    tempWavPath_ = "/tmp/vinput_zip_" + std::to_string(getpid()) + ".wav";
+    tempWavPath_ = "/tmp/vinput_zip_" + std::to_string(getpid()) + "_"
+                   + std::to_string(time(nullptr)) + ".wav";
 }
 
 ZipformerAsrProvider::~ZipformerAsrProvider() {
@@ -61,21 +63,19 @@ void ZipformerAsrProvider::stop() {
         auto joiner   = dir + "/joiner-epoch-99-avg-1.onnx";
         auto tokens   = dir + "/tokens.txt";
 
-        int outPipe[2], errPipe[2];
-        if (pipe(outPipe) < 0 || pipe(errPipe) < 0) {
-            if (onE) onE("Zipformer: pipe failed");
-            unlink(wav.c_str());
-            return;
-        }
+int outPipe[2], errPipe[2];
+if (pipe(outPipe) < 0 || pipe(errPipe) < 0) {
+    if (onE) onE("Zipformer: pipe failed");
+    return;
+}
 
         pid_t pid = fork();
-        if (pid < 0) {
-            if (onE) onE("Zipformer: fork failed");
-            close(outPipe[0]); close(outPipe[1]);
-            close(errPipe[0]); close(errPipe[1]);
-            unlink(wav.c_str());
-            return;
-        }
+if (pid < 0) {
+    if (onE) onE("Zipformer: fork failed");
+    close(outPipe[0]); close(outPipe[1]);
+    close(errPipe[0]); close(errPipe[1]);
+    return;
+}
 
         if (pid == 0) {
             // --- child ---
@@ -113,9 +113,8 @@ void ZipformerAsrProvider::stop() {
         readFd(errPipe[0], std::ref(stderrText));
         outReader.join();
 
-        int status;
-        waitpid(pid, &status, 0);
-        unlink(wav.c_str());
+int status;
+waitpid(pid, &status, 0);
 
         if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
             fprintf(stderr, "Vinput: sherpa-onnx exited %d, stderr:\n%s\n",
