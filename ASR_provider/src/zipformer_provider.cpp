@@ -24,12 +24,13 @@ static std::string expandPath(const std::string &p) {
 
 ZipformerAsrProvider::ZipformerAsrProvider()
     : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {
-    tempWavPath_ = "/tmp/vinput_zip_" + std::to_string(getpid()) + "_"
-                   + std::to_string(time(nullptr)) + ".wav";
+    // 启动常驻录音流，防止 PipeWire 挂起 USB 设备
+    keepAliveThread_ = std::thread(&ZipformerAsrProvider::keepAliveLoop, this);
 }
 
 ZipformerAsrProvider::~ZipformerAsrProvider() {
-    if (recordThread_.joinable()) recordThread_.detach();
+    keepRunning_ = false;
+    if (keepAliveThread_.joinable()) keepAliveThread_.join();
 }
 
 void ZipformerAsrProvider::setConfig(const std::string &key,
@@ -37,68 +38,100 @@ void ZipformerAsrProvider::setConfig(const std::string &key,
     if (key == "model_dir") modelDir_ = value;
 }
 
-void ZipformerAsrProvider::start() {
-    if (recording_) return;
-    recording_ = true;
-    if (onState_) onState_(true);
-
-    auto wav = tempWavPath_;
-    auto dir = expandPath(modelDir_);
-    auto onR = onResult_;
-    auto onE = onError_;
-
-    recordThread_ = std::thread([this, wav, dir, onR, onE]() {
-        auto samples = recordSamples();
-        if (samples.empty()) {
-            recording_ = false;
-            return;
-        }
-
-        normalizeAndWriteWav(samples, wav);
-        runTranscribe(wav, dir, onR, onE);
-        recording_ = false;
-    });
-}
-
-void ZipformerAsrProvider::stop() {
-    if (recording_) {
-        recording_ = false;
-        if (onState_) onState_(false);
-    }
-    // don't join — recording thread handles WAV + transcription async
-    if (recordThread_.joinable()) recordThread_.detach();
-}
-
-std::vector<int16_t> ZipformerAsrProvider::recordSamples() {
+void ZipformerAsrProvider::keepAliveLoop() {
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
     ss.rate = 16000;
     ss.channels = 1;
 
     int error = 0;
-    auto *pa = pa_simple_new(nullptr, "vinput", PA_STREAM_RECORD,
-                             nullptr, "voice", &ss, nullptr, nullptr, &error);
-    if (!pa) {
-        fprintf(stderr, "Vinput: PulseAudio error: %s\n", pa_strerror(error));
-        return {};
+    paStream_ = pa_simple_new(nullptr, "vinput-keep", PA_STREAM_RECORD,
+                              nullptr, "voice", &ss, nullptr, nullptr, &error);
+    if (!paStream_) {
+        fprintf(stderr, "Vinput: keep-alive PA error: %s\n", pa_strerror(error));
+        return;
     }
+    fprintf(stderr, "Vinput: keep-alive stream started\n");
 
-    std::vector<int16_t> samples;
     uint8_t buf[4096];
-    while (recording_) {
-        if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
-        auto *p = reinterpret_cast<int16_t *>(buf);
-        samples.insert(samples.end(), p, p + sizeof(buf) / 2);
+    while (keepRunning_) {
+        if (pa_simple_read(paStream_, buf, sizeof(buf), &error) < 0) {
+            fprintf(stderr, "Vinput: keep-alive read error: %s\n", pa_strerror(error));
+            break;
+        }
+
+        if (recording_) {
+            auto *p = reinterpret_cast<int16_t *>(buf);
+            std::lock_guard<std::mutex> lk(sampleMutex_);
+            samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
+        }
+
+        if (stopRequested_) {
+            // 松键后收尾: 等 500ms 再读最后 128ms 尾巴
+            usleep(500 * 1000);
+            if (pa_simple_read(paStream_, buf, sizeof(buf), &error) >= 0) {
+                auto *p = reinterpret_cast<int16_t *>(buf);
+                std::lock_guard<std::mutex> lk(sampleMutex_);
+                samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
+            }
+
+            // 取出累积的样本，释放锁后处理
+            std::vector<int16_t> batch;
+            {
+                std::lock_guard<std::mutex> lk(sampleMutex_);
+                batch.swap(samples_);
+            }
+
+            auto wav = sessionWav_;
+            auto dir = sessionDir_;
+            auto onR = sessionOnR_;
+            auto onE = sessionOnE_;
+
+            recording_ = false;
+            stopRequested_ = false;
+            stopCv_.notify_all();
+
+            if (!batch.empty()) {
+                processRecording(std::move(batch), wav, onR, onE);
+                // transcribe 线程自己管自己，不 join
+                // WAV 保留在 /tmp 不删除
+            }
+        }
     }
 
-    // 排空 PulseAudio 缓冲区: 停录后可能还有 128ms 的尾音在 PA buffer 里
-    usleep(500 * 1000);
-    if (pa_simple_read(pa, buf, sizeof(buf), &error) >= 0) {
-        auto *p = reinterpret_cast<int16_t *>(buf);
-        samples.insert(samples.end(), p, p + sizeof(buf) / 2);
+    if (paStream_) {
+        pa_simple_free(paStream_);
+        paStream_ = nullptr;
     }
-    pa_simple_free(pa);
-    return samples;
+}
+
+void ZipformerAsrProvider::start() {
+    if (recording_) return;
+    {
+        std::lock_guard<std::mutex> lk(sampleMutex_);
+        samples_.clear();
+    }
+    sessionWav_ = "/tmp/vinput_zip_" + std::to_string(getpid()) + "_"
+                  + std::to_string(time(nullptr)) + ".wav";
+    sessionDir_ = expandPath(modelDir_);
+    sessionOnR_ = onResult_;
+    sessionOnE_ = onError_;
+    recording_ = true;
+    if (onState_) onState_(true);
+}
+
+void ZipformerAsrProvider::stop() {
+    if (!recording_) return;
+    if (onState_) onState_(false);
+    stopRequested_ = true;
+}
+
+void ZipformerAsrProvider::processRecording(std::vector<int16_t> samples,
+                                              const std::string &wavPath,
+                                              AsrResultCallback onR,
+                                              AsrErrorCallback onE) {
+    normalizeAndWriteWav(samples, wavPath);
+    runTranscribe(wavPath, sessionDir_, onR, onE);
 }
 
 void ZipformerAsrProvider::normalizeAndWriteWav(std::vector<int16_t> &samples,
