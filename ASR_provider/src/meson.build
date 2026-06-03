@@ -1,4 +1,4 @@
-sherpa_dir = get_option('sherpa_onnx_dir')
+sherpa_dir = sherpa_onnx_dir
 
 asr_provider_lib = static_library('asr_provider',
   'asr_provider.h',
