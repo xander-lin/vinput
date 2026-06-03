@@ -307,10 +307,14 @@ private:
         if (!isFinal || !currentIC_) return;
 
         // commitString 必须从 fcitx5 主事件循环线程调用
+        // 用 addTimeEvent(now) 而非 addDeferEvent:
+        // timerfd 会立刻唤醒 epoll，而 defer 要等下次轮询
         auto icUuid = currentIC_->uuid();
         auto txt = text;
-        pendingCommit_ = instance_->eventLoop().addDeferEvent(
-            [this, icUuid, txt](fcitx::EventSource *) -> bool {
+        pendingCommit_ = instance_->eventLoop().addTimeEvent(
+            CLOCK_MONOTONIC,
+            fcitx::now(CLOCK_MONOTONIC), 0,
+            [this, icUuid, txt](fcitx::EventSourceTime *, uint64_t) -> bool {
                 auto *ic = instance_->inputContextManager().findByUUID(icUuid);
                 if (ic) {
                     ic->commitString(txt);
