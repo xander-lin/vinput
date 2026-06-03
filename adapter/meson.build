@@ -1,5 +1,4 @@
 fcitx5_core = dependency('Fcitx5Core')
-fcitx5_module = dependency('Fcitx5Module')
 pulse_simple = dependency('libpulse-simple')
 ebur128 = dependency('libebur128')
 

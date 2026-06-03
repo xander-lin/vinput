@@ -6,6 +6,3 @@ Library=vinput
 Type=SharedLibrary
 OnDemand=False
 Configurable=True
-
-[Addon/Dependencies]
-0=notifications

@@ -23,9 +23,10 @@
 #include <string.h>
 #include <mutex>
 #include <vector>
-
-// notifications addon 公共 API (跨 addon 调用)
-#include <fcitx-module/notifications/notifications_public.h>
+#include <cmath>
+#include <thread>
+#include <pulse/simple.h>
+#include <pulse/error.h>
 
 // Vinput ASR provider 接口
 #include "asr_provider.h"
@@ -107,7 +108,7 @@ public:
 
 private:
     static constexpr char confFile[] = "conf/vinput.conf";
-    static constexpr uint64_t kLongPressUsec = 500 * 1000; // 500ms
+    static constexpr uint64_t kLongPressUsec = 300 * 1000; // 300ms
 
     // 还原 CapsLock 状态 — 通过常驻 uinput 虚键发送 CapsLock 按键
     void revertCapsLock() {
@@ -158,8 +159,29 @@ private:
     std::mutex pendingMutex_;
     std::vector<std::pair<fcitx::ICUUID, std::string>> pendingCommits_;
 
-    // 运行时依赖: notifications addon
-    FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
+    // 提示音: 用 PulseAudio 生成正弦波短音
+    static void beep(double freq, int durationMs, double volume = 0.3) {
+        std::thread([=]() {
+            pa_sample_spec ss;
+            ss.format = PA_SAMPLE_S16LE;
+            ss.rate = 16000;
+            ss.channels = 1;
+
+            int error = 0;
+            auto *pa = pa_simple_new(nullptr, "vinput-beep", PA_STREAM_PLAYBACK,
+                                     nullptr, "beep", &ss, nullptr, nullptr, &error);
+            if (!pa) return;
+
+            int n = 16000 * durationMs / 1000;
+            std::vector<int16_t> wav(n);
+            for (int i = 0; i < n; i++)
+                wav[i] = (int16_t)(32767 * volume * std::sin(2 * M_PI * freq * i / 16000.0));
+
+            pa_simple_write(pa, wav.data(), n * 2, &error);
+            pa_simple_drain(pa, &error);
+            pa_simple_free(pa);
+        }).detach();
+    }
 
     // 状态
     bool active_ = false;
@@ -243,14 +265,8 @@ private:
         config_.defaultProvider.setValue(id);
         safeSaveAsIni(config_, confFile);
 
-        // 通知用户当前后端
-        auto total = (int)list.size();
-        auto msg = name + " (" + std::to_string(providerIndex_ + 1)
-                   + "/" + std::to_string(total) + ")";
-        notifications()->call<fcitx::INotifications::sendNotification>(
-            "fcitx5-vinput", 0, "fcitx-vinput",
-            "Vinput", msg,
-            std::vector<std::string>{}, 2000, nullptr, nullptr);
+        // 切换音: 短促中音
+        beep(660, 50);
 
         keyEvent.filterAndAccept();
         return true;
@@ -284,11 +300,7 @@ private:
             applyAsrConfig();
             setupAsrCallbacks();
 
-            notifications()->call<fcitx::INotifications::sendNotification>(
-                "fcitx5-vinput", 0, "fcitx-vinput",
-                "Vinput", "语音输入已激活",
-                std::vector<std::string>{}, 3000, nullptr, nullptr);
-
+            beep(880, 100);  // 激活音: 高音
             asr_->start();
         }
     }
@@ -325,11 +337,7 @@ private:
         }
         currentIC_ = nullptr;
 
-        notifications()->call<fcitx::INotifications::sendNotification>(
-            "fcitx5-vinput", 0, "fcitx-vinput",
-            "Vinput", "语音输入已结束",
-            std::vector<std::string>{}, 3000, nullptr, nullptr);
-
+        beep(440, 100);  // 结束音: 低音
         // 松键后还原 CapsLock (按下时硬件层已切换, 现在补一个假按键还原)
         revertCapsLock();
     }
