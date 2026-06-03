@@ -33,10 +33,9 @@ DoubaoAsrProvider::DoubaoAsrProvider() {
 }
 
 DoubaoAsrProvider::~DoubaoAsrProvider() {
-    if (childPid_) {
-        kill(childPid_, SIGTERM);
-        waitpid(childPid_, nullptr, 0);
-    }
+    // 关闭管道让子进程自然结束
+    if (childStdin_ >= 0) close(childStdin_);
+    if (childStdout_ >= 0) close(childStdout_);
 }
 
 void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &value) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """豆包流式语音识别 WebSocket 客户端 (子进程模式)
 从 stdin 读 16kHz S16LE mono PCM，结果写 stdout (JSONL)
-配置: ~/.config/vinput/doubao.json {"app_key":"...","access_key":"...","resource_id":"..."}
+配置: ~/.config/vinput/doubao.json {"api_key":"...","resource_id":"..."}
 """
 import sys, os, json, struct, asyncio, uuid
 import websockets
@@ -9,82 +9,58 @@ import websockets
 CONFIG_PATH = os.path.expanduser("~/.config/vinput/doubao.json")
 WS_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
 
-# WebSocket 二进制协议帧格式 (大端)
-# Header: 4 bytes
-#   byte0: version(4bit) | header_size(4bit)  → 0x11
-#   byte1: msg_type(4bit) | flags(4bit)
-#   byte2: serial(4bit) | compress(4bit)
-#   byte3: reserved (0)
-# Payload size: uint32 big-endian
-# Payload: raw bytes
+# 200ms @ 16kHz S16LE mono = 3200 samples = 6400 bytes
+CHUNK_BYTES = 6400
 
-HEADER_SIZE = 0x11  # version=1, header_size=4(1x4 bytes)
-
-def build_header(msg_type: int, flags: int = 0, serial: int = 0, compress: int = 0) -> bytes:
-    return struct.pack('>BBBB', HEADER_SIZE,
+# --- 二进制帧协议 ---
+def build_header(msg_type: int, flags: int = 0,
+                 serial: int = 0, compress: int = 0) -> bytes:
+    """4-byte header: ver(4)|hdr_sz(4)  type(4)|flags(4)  ser(4)|cmp(4)  reserved(8)"""
+    return struct.pack('>BBBB',
+                       0x11,  # version=1, header_size=4
                        (msg_type << 4) | flags,
                        (serial << 4) | compress,
                        0)
 
-def build_frame(msg_type: int, payload: bytes, flags: int = 0,
-                serial: int = 0, compress: int = 0) -> bytes:
-    header = build_header(msg_type, flags, serial, compress)
-    return header + struct.pack('>I', len(payload)) + payload
+def build_frame(msg_type: int, payload: bytes, flags: int = 0) -> bytes:
+    hdr = build_header(msg_type, flags)
+    return hdr + struct.pack('>I', len(payload)) + payload
 
 def build_full_request() -> bytes:
-    """构建 Full Client Request"""
     req = {
-        "audio": {
-            "format": "pcm",
-            "rate": 16000,
-            "bits": 16,
-            "channel": 1,
-            "language": "zh-CN",
-        },
-        "request": {
-            "model_name": "bigmodel",
-            "enable_itn": True,
-            "enable_punc": True,
-        },
+        "audio": {"format": "pcm", "rate": 16000, "bits": 16, "channel": 1, "language": "zh-CN"},
+        "request": {"model_name": "bigmodel", "enable_itn": True, "enable_punc": True},
     }
-    payload = json.dumps(req, ensure_ascii=False).encode()
-    return build_frame(0x01, payload, flags=0, serial=0x01)  # type=1: full client req
+    return build_frame(0x01, json.dumps(req, ensure_ascii=False).encode())
 
 def build_audio_frame(audio: bytes, is_last: bool = False) -> bytes:
-    flags = 0x02 if is_last else 0x00  # 0x2 = 最后一包
-    return build_frame(0x02, audio, flags=flags)  # type=2: audio only
+    return build_frame(0x02, audio, flags=0x02 if is_last else 0x00)  # type=2: audio only
 
-def parse_response(frame: bytes) -> dict | None:
-    """解析 Full Server Response, 提取 JSON payload"""
-    if len(frame) < 4:
+def parse_response(data: bytes) -> dict | None:
+    """解析 full server response 帧, 返回 JSON dict 或 None"""
+    if len(data) < 8:
         return None
-    # Parse header: msg_type is byte1 high 4 bits
-    msg_type = (frame[1] >> 4) & 0x0F
+    msg_type = (data[1] >> 4) & 0x0F
     if msg_type == 0x0F:  # error
-        offset = 4  # skip header
-        err_code = struct.unpack('>I', frame[offset:offset+4])[0]
-        offset += 4
-        err_size = struct.unpack('>I', frame[offset:offset+4])[0]
-        offset += 4
-        err_msg = frame[offset:offset+err_size].decode('utf-8', errors='replace')
+        off = 4
+        err_code = struct.unpack('>I', data[off:off+4])[0]; off += 4
+        err_size = struct.unpack('>I', data[off:off+4])[0]; off += 4
+        err_msg = data[off:off+err_size].decode(errors='replace')
         print(json.dumps({"error": err_msg, "code": err_code}), flush=True)
         return None
     if msg_type != 0x09:  # 9 = full server response
         return None
-    # Skip header(4) + sequence(4)
-    offset = 8
-    if len(frame) <= offset + 4:
+    off = 8  # skip header(4) + sequence(4)
+    if len(data) <= off + 4:
         return None
-    payload_size = struct.unpack('>I', frame[offset:offset+4])[0]
-    offset += 4
-    payload = frame[offset:offset+payload_size]
+    sz = struct.unpack('>I', data[off:off+4])[0]; off += 4
     try:
-        return json.loads(payload.decode())
+        return json.loads(data[off:off+sz].decode())
     except Exception:
         return None
 
+# --- 主流程 ---
 async def main():
-    # 读配置
     try:
         with open(CONFIG_PATH) as f:
             cfg = json.load(f)
@@ -92,71 +68,63 @@ async def main():
         print(json.dumps({"error": f"config not found: {CONFIG_PATH}"}), flush=True)
         sys.exit(1)
 
-    app_key = cfg.get("app_key", "")
-    access_key = cfg.get("access_key", "")
+    api_key = cfg.get("api_key", cfg.get("app_key", ""))
     resource_id = cfg.get("resource_id", "volc.bigasr.sauc.duration")
 
     headers = {
-        "X-Api-App-Key": app_key,
-        "X-Api-Access-Key": access_key,
+        "X-Api-Key": api_key,
         "X-Api-Resource-Id": resource_id,
         "X-Api-Request-Id": str(uuid.uuid4()),
         "X-Api-Sequence": "-1",
     }
 
-    # 按字节读 stdin: 3200 bytes = 200ms @ 16kHz S16LE mono
-    CHUNK_SIZE = 3200
-
     loop = asyncio.get_running_loop()
 
     async with websockets.connect(WS_URL, extra_headers=headers, ping_interval=None) as ws:
-        # 1. 发送 Full Client Request
+        # 1. Full Client Request
         await ws.send(build_full_request())
-        resp = await ws.recv()
-        _ = parse_response(resp)  # 握手响应, 忽略
+        _ = await ws.recv()  # 握手响应, 忽略
 
-        # 2. 从 stdin 读音频并发送
-        async def read_stdin():
-            chunks = []
-            while True:
-                data = await loop.run_in_executor(None, sys.stdin.buffer.read, CHUNK_SIZE)
-                if not data:
-                    break
-                chunks.append(data)
-            return chunks
-
-        async def send_audio(chunks: list[bytes]):
-            last_idx = len(chunks) - 1
-            for i, chunk in enumerate(chunks):
-                is_last = (i == last_idx)
-                await ws.send(build_audio_frame(chunk, is_last))
-                # 收识别结果
+        # 2. 边读 stdin 边发送
+        async def recv_results():
+            """后台收结果"""
+            final = False
+            while not final:
                 try:
-                    resp = await asyncio.wait_for(ws.recv(), timeout=0.3)
-                    result = parse_response(resp)
-                    if result:
-                        text = result.get("result", {}).get("text", "")
-                        print(json.dumps({"text": text, "is_final": False}), flush=True)
+                    data = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                    r = parse_response(data)
+                    if r and "result" in r:
+                        txt = r["result"].get("text", "")
+                        utts = r["result"].get("utterances", [])
+                        definite = utts and utts[-1].get("definite", False) if utts else False
+                        if txt:
+                            print(json.dumps({"text": txt, "is_final": definite}), flush=True)
+                            if definite:
+                                final = True
                 except asyncio.TimeoutError:
                     pass
+                except websockets.ConnectionClosed:
+                    break
 
-        chunks = await read_stdin()
-        await send_audio(chunks)
+        recv_task = asyncio.create_task(recv_results())
 
-        # 3. 收最终结果
-        try:
-            while True:
-                resp = await asyncio.wait_for(ws.recv(), timeout=1.0)
-                result = parse_response(resp)
-                if result:
-                    text = result.get("result", {}).get("text", "")
-                    utterances = result.get("result", {}).get("utterances", [])
-                    if utterances and utterances[-1].get("definite"):
-                        print(json.dumps({"text": text, "is_final": True}), flush=True)
-                        break
-        except asyncio.TimeoutError:
-            pass
+        # 3. 读 stdin 分块发送
+        first = True
+        while True:
+            data = await loop.run_in_executor(None, sys.stdin.buffer.read, CHUNK_BYTES)
+            if not data or len(data) < CHUNK_BYTES:
+                # 最后一包 (可能不足 200ms)
+                if data:
+                    await ws.send(build_audio_frame(data, is_last=True))
+                else:
+                    # 发送空最后一包通知服务端结束
+                    await ws.send(build_audio_frame(b"", is_last=True))
+                break
+            await ws.send(build_audio_frame(data))
+            first = False
 
+        # 4. 等最终结果
+        await recv_task
 
 if __name__ == "__main__":
     asyncio.run(main())
