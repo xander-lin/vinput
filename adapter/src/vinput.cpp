@@ -32,14 +32,7 @@
 FCITX_CONFIGURATION(
     VinputConfig,
     fcitx::Option<std::string> defaultProvider{
-        this, "DefaultProvider", _("Default ASR Provider"), "mock"};
-    fcitx::Option<std::string> vllmUds{
-        this, "VllmUds", _("vLLM Unix Socket"), ""};
-    fcitx::Option<std::string> vllmHost{
-        this, "VllmHost", _("vLLM Host"), "127.0.0.1"};
-    fcitx::Option<int, fcitx::IntConstrain> vllmPort{
-        this, "VllmPort", _("vLLM Port"), 0,
-        fcitx::IntConstrain(0, 65535)};
+        this, "DefaultProvider", _("Default ASR Provider"), "zipformer"};
 );
 
 // VinputAddon — Vinput 语音输入插件的 addon 主体
@@ -281,9 +274,8 @@ private:
     // 注入配置到 ASR 后端
     void applyAsrConfig() {
         if (!asr_) return;
-        asr_->setConfig("uds", config_.vllmUds.value());
-        asr_->setConfig("host", config_.vllmHost.value());
-        asr_->setConfig("port", std::to_string(config_.vllmPort.value()));
+        // 后端配置通过 setConfig() 注入
+        // 目前 zipformer 后端使用默认模型路径
     }
 
     // 松键后结束
