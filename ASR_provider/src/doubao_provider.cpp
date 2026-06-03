@@ -71,8 +71,7 @@ DoubaoAsrProvider::~DoubaoAsrProvider() {
         pa_simple_free(paStream_);
         paStream_ = nullptr;
     }
-    if (sendFd_ >= 0) close(sendFd_);
-    if (recvFd_ >= 0) close(recvFd_);
+    // sendFd_ 由 stop() 关闭, recvFd_ 由结果线程关闭
 }
 
 void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &value) {
@@ -121,7 +120,7 @@ void DoubaoAsrProvider::start() {
         if (!f) return;
 
         char line[16384];
-        while (sendRunning_ && fgets(line, sizeof(line), f)) {
+        while (fgets(line, sizeof(line), f)) {
             const char *ts = strstr(line, "\"text\"");
             const char *fs = strstr(line, "\"is_final\"");
             const char *es = strstr(line, "\"error\"");
