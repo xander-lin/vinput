@@ -92,7 +92,7 @@ std::vector<int16_t> ZipformerAsrProvider::recordSamples() {
     }
 
     // 排空 PulseAudio 缓冲区: 停录后可能还有 128ms 的尾音在 PA buffer 里
-    usleep(100 * 1000);
+    usleep(500 * 1000);
     if (pa_simple_read(pa, buf, sizeof(buf), &error) >= 0) {
         auto *p = reinterpret_cast<int16_t *>(buf);
         samples.insert(samples.end(), p, p + sizeof(buf) / 2);
