@@ -5,6 +5,7 @@
 #include <fcitx/instance.h>        // Instance, fcitx 服务器实例
 #include <fcitx/event.h>           // KeyEvent
 #include <fcitx/inputcontext.h>    // InputContext
+#include <fcitx/inputpanel.h>       // InputPanel, setClientPreedit
 #include <fcitx/inputcontextmanager.h>  // findByUUID
 #include <fcitx-config/configuration.h>   // FCITX_CONFIGURATION
 #include <fcitx-config/iniparser.h>       // readAsIni, safeSaveAsIni
@@ -68,17 +69,24 @@ public:
                 [this](fcitx::EventSourceIO *, int fd, fcitx::IOEventFlags) -> bool {
                     char buf[64];
                     while (read(fd, buf, sizeof(buf)) > 0) {}
-                    std::vector<std::pair<fcitx::ICUUID, std::string>> batch;
+                    std::vector<PendingCommit> batch;
                     {
                         std::lock_guard<std::mutex> lk(pendingMutex_);
                         batch.swap(pendingCommits_);
                     }
-                    for (auto &[uuid, txt] : batch) {
-                        auto *ic = instance_->inputContextManager().findByUUID(uuid);
-                        if (ic) {
-                            ic->commitString(txt);
-                            FCITX_INFO() << "Vinput committed: " << txt;
+                    for (auto &pc : batch) {
+                        auto *ic = instance_->inputContextManager().findByUUID(pc.uuid);
+                        if (!ic) continue;
+                        if (pc.isFinal) {
+                            ic->inputPanel().reset();
+                            ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+                            ic->commitString(pc.text);
+                        } else {
+                            ic->inputPanel().setClientPreedit(fcitx::Text(pc.text));
+                            ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
                         }
+                        FCITX_INFO() << "Vinput: " << (pc.isFinal ? "commit" : "preedit")
+                                     << " \"" << pc.text << "\"";
                     }
                     return true;
                 });
@@ -165,8 +173,13 @@ private:
     // self-pipe: 后台线程安全唤醒主事件循环
     int wakePipe_[2] = {-1, -1};
     std::unique_ptr<fcitx::EventSourceIO> wakeWatcher_;
+    struct PendingCommit {
+        fcitx::ICUUID uuid;
+        std::string text;
+        bool isFinal;
+    };
     std::mutex pendingMutex_;
-    std::vector<std::pair<fcitx::ICUUID, std::string>> pendingCommits_;
+    std::vector<PendingCommit> pendingCommits_;
 
     // 运行时依赖: notifications addon (仅用于切换显示)
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
@@ -197,7 +210,6 @@ private:
     fcitx::InputContext *currentIC_ = nullptr;
     fcitx::ICUUID currentUuid_ = {};  // 用于 deactivate 后仍能查找 IC
     int providerIndex_ = 0;
-    std::string lastCommittedText_;  // Doubao 全文本追踪, 用于计算 diff
 
     // 键盘事件回调
     void onKeyEvent(fcitx::KeyEvent &keyEvent) {
@@ -254,7 +266,6 @@ private:
         if (list.empty()) return false;
 
         providerIndex_ = (providerIndex_ + direction + (int)list.size()) % (int)list.size();
-        lastCommittedText_.clear();
         const auto &[nextId, nextName] = list[providerIndex_];
 
         // 通知用户即将切换到哪个后端 (在实际停止/创建之前)
@@ -296,7 +307,6 @@ private:
     void onActivate() {
         timer_.reset();
         active_ = true;
-        lastCommittedText_.clear();
         FCITX_INFO() << "Vinput activated";
 
         auto list = vinput::AsrProviderRegistry::instance().listFactories();
@@ -364,25 +374,14 @@ private:
     }
 
     // ASR 识别结果回调 (可能在后台线程调用)
+    // Doubao 每次返回完整累积文本, 用 preedit 显示中间态, final 才 commit
     void onAsrResult(const std::string &text, bool isFinal) {
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
 
-        // Doubao 每次返回完整文本, 用 common-prefix 算 diff (处理标点修订)
-        std::string diff;
-        size_t common = 0;
-        while (common < lastCommittedText_.size() && common < text.size()
-               && lastCommittedText_[common] == text[common])
-            common++;
-        diff = text.substr(common);
-        lastCommittedText_ = text;
-        if (isFinal) lastCommittedText_.clear();
-
-        if (diff.empty()) return;
-
         {
             std::lock_guard<std::mutex> lk(pendingMutex_);
-            pendingCommits_.emplace_back(currentUuid_, diff);
+            pendingCommits_.emplace_back(currentUuid_, text, isFinal);
         }
         char c = 1;
         write(wakePipe_[1], &c, 1);
