@@ -21,6 +21,8 @@
 #include <sys/ioctl.h>
 #include <linux/uinput.h>
 #include <string.h>
+#include <mutex>
+#include <vector>
 
 // notifications addon 公共 API (跨 addon 调用)
 #include <fcitx-module/notifications/notifications_public.h>
@@ -47,6 +49,31 @@ public:
         // 创建常驻 uinput 虚键盘, 用于还原 CapsLock
         initUinput();
 
+        // self-pipe: 后台 ASR 线程安全唤醒主事件循环
+        if (pipe(wakePipe_) == 0) {
+            fcntl(wakePipe_[0], F_SETFL, O_NONBLOCK);
+            fcntl(wakePipe_[1], F_SETFL, O_NONBLOCK);
+            wakeWatcher_ = instance_->eventLoop().addIOEvent(
+                wakePipe_[0], fcitx::IOEventFlag::In,
+                [this](fcitx::EventSourceIO *, int fd, fcitx::IOEventFlags) -> bool {
+                    char buf[64];
+                    while (read(fd, buf, sizeof(buf)) > 0) {}
+                    std::vector<std::pair<fcitx::ICUUID, std::string>> batch;
+                    {
+                        std::lock_guard<std::mutex> lk(pendingMutex_);
+                        batch.swap(pendingCommits_);
+                    }
+                    for (auto &[uuid, txt] : batch) {
+                        auto *ic = instance_->inputContextManager().findByUUID(uuid);
+                        if (ic) {
+                            ic->commitString(txt);
+                            FCITX_INFO() << "Vinput committed: " << txt;
+                        }
+                    }
+                    return true;
+                });
+        }
+
         // 在 PreInputMethod 阶段监听键盘事件 (早于输入法引擎)
         keyWatcher_ = instance_->watchEvent(
             fcitx::EventType::InputContextKeyEvent,
@@ -62,6 +89,8 @@ public:
             ioctl(uinputFd_, UI_DEV_DESTROY);
             close(uinputFd_);
         }
+        if (wakePipe_[0] >= 0) close(wakePipe_[0]);
+        if (wakePipe_[1] >= 0) close(wakePipe_[1]);
     }
 
     // 配置读写
@@ -123,13 +152,18 @@ private:
     std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>> keyWatcher_;
     int uinputFd_ = -1;
 
+    // self-pipe: 后台线程安全唤醒主事件循环
+    int wakePipe_[2] = {-1, -1};
+    std::unique_ptr<fcitx::EventSourceIO> wakeWatcher_;
+    std::mutex pendingMutex_;
+    std::vector<std::pair<fcitx::ICUUID, std::string>> pendingCommits_;
+
     // 运行时依赖: notifications addon
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
 
     // 状态
     bool active_ = false;
     std::unique_ptr<fcitx::EventSourceTime> timer_;
-    std::unique_ptr<fcitx::EventSource> pendingCommit_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
     int providerIndex_ = 0; // 当前使用的 ASR 后端在列表中的索引
@@ -300,30 +334,18 @@ private:
         revertCapsLock();
     }
 
-    // ASR 识别结果回调
+    // ASR 识别结果回调 (可能在后台线程调用)
     void onAsrResult(const std::string &text, bool isFinal) {
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
         if (!isFinal || !currentIC_) return;
 
-        // commitString 必须从 fcitx5 主事件循环线程调用
-        // 用 addTimeEvent(now) 而非 addDeferEvent:
-        // timerfd 会立刻唤醒 epoll，而 defer 要等下次轮询
-        auto icUuid = currentIC_->uuid();
-        auto txt = text;
-        pendingCommit_ = instance_->eventLoop().addTimeEvent(
-            CLOCK_MONOTONIC,
-            fcitx::now(CLOCK_MONOTONIC), 0,
-            [this, icUuid, txt](fcitx::EventSourceTime *, uint64_t) -> bool {
-                auto *ic = instance_->inputContextManager().findByUUID(icUuid);
-                if (ic) {
-                    ic->commitString(txt);
-                    ic->updateUserInterface(
-                        fcitx::UserInterfaceComponent::InputPanel);
-                }
-                pendingCommit_.reset();
-                return false;
-            });
+        {
+            std::lock_guard<std::mutex> lk(pendingMutex_);
+            pendingCommits_.emplace_back(currentIC_->uuid(), text);
+        }
+        char c = 1;
+        write(wakePipe_[1], &c, 1);  // 唤醒主线程 epoll
     }
 
     // ASR 错误回调
