@@ -17,8 +17,10 @@ public:
     void setConfig(const std::string &key, const std::string &value) override;
 
 private:
-    void recordThread();
-    void transcribe();   // 子进程调用 sherpa-onnx
+    std::vector<int16_t> recordSamples();
+    void normalizeAndWriteWav(std::vector<int16_t> &samples, const std::string &path);
+    void runTranscribe(const std::string &wav, const std::string &dir,
+                       AsrResultCallback onR, AsrErrorCallback onE);
 
     std::string modelDir_;
     std::string tempWavPath_;

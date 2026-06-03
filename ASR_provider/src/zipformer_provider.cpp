@@ -29,8 +29,7 @@ ZipformerAsrProvider::ZipformerAsrProvider()
 }
 
 ZipformerAsrProvider::~ZipformerAsrProvider() {
-    recording_ = false;
-    if (recordThread_.joinable()) recordThread_.join();
+    if (recordThread_.joinable()) recordThread_.detach();
 }
 
 void ZipformerAsrProvider::setConfig(const std::string &key,
@@ -42,105 +41,35 @@ void ZipformerAsrProvider::start() {
     if (recording_) return;
     recording_ = true;
     if (onState_) onState_(true);
-    recordThread_ = std::thread([this]() { recordThread(); });
-}
 
-void ZipformerAsrProvider::stop() {
-    if (!recording_) return;
-    recording_ = false;
-    if (recordThread_.joinable()) recordThread_.join();
-    if (onState_) onState_(false);
-
-    // 后台子进程识别
     auto wav = tempWavPath_;
     auto dir = expandPath(modelDir_);
     auto onR = onResult_;
     auto onE = onError_;
-    std::thread([wav, dir, onR, onE]() {
-        auto sherpaBin = expandPath("~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx");
-        auto encoder  = dir + "/encoder-epoch-99-avg-1.onnx";
-        auto decoder  = dir + "/decoder-epoch-99-avg-1.onnx";
-        auto joiner   = dir + "/joiner-epoch-99-avg-1.onnx";
-        auto tokens   = dir + "/tokens.txt";
 
-int outPipe[2], errPipe[2];
-if (pipe(outPipe) < 0 || pipe(errPipe) < 0) {
-    if (onE) onE("Zipformer: pipe failed");
-    return;
-}
-
-        pid_t pid = fork();
-if (pid < 0) {
-    if (onE) onE("Zipformer: fork failed");
-    close(outPipe[0]); close(outPipe[1]);
-    close(errPipe[0]); close(errPipe[1]);
-    return;
-}
-
-        if (pid == 0) {
-            // --- child ---
-            dup2(outPipe[1], STDOUT_FILENO);
-            dup2(errPipe[1], STDERR_FILENO);
-            close(outPipe[0]); close(outPipe[1]);
-            close(errPipe[0]); close(errPipe[1]);
-
-            std::string encArg = "--encoder=" + encoder;
-            std::string decArg = "--decoder=" + decoder;
-            std::string joiArg = "--joiner="  + joiner;
-            std::string tokArg = "--tokens="  + tokens;
-
-            execl(sherpaBin.c_str(), sherpaBin.c_str(),
-                  encArg.c_str(), decArg.c_str(), joiArg.c_str(), tokArg.c_str(),
-                  "--provider=cpu", "--num-threads=4",
-                  wav.c_str(), nullptr);
-            _exit(127);
-        }
-
-        // --- parent ---
-        close(outPipe[1]);
-        close(errPipe[1]);
-
-        auto readFd = [](int fd, std::string &out) {
-            char buf[4096];
-            ssize_t n;
-            while ((n = read(fd, buf, sizeof(buf))) > 0)
-                out.append(buf, (size_t)n);
-            close(fd);
-        };
-
-        std::string stdoutText, stderrText;
-        std::thread outReader(readFd, outPipe[0], std::ref(stdoutText));
-        readFd(errPipe[0], std::ref(stderrText));
-        outReader.join();
-
-int status;
-waitpid(pid, &status, 0);
-
-        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-            fprintf(stderr, "Vinput: sherpa-onnx exited %d, stderr:\n%s\n",
-                    WEXITSTATUS(status), stderrText.c_str());
-            if (onE) onE("Zipformer: recognition failed");
+    recordThread_ = std::thread([this, wav, dir, onR, onE]() {
+        auto samples = recordSamples();
+        if (samples.empty()) {
+            recording_ = false;
             return;
         }
 
-        // 解析 JSON stderr, 取 "text" 字段
-        auto pos = stderrText.rfind("\"text\"");
-        if (pos == std::string::npos) {
-            if (onE) onE("Zipformer: no text in output");
-            return;
-        }
-
-        pos += 9; // skip "text": "
-        auto end = stderrText.find('"', pos);
-        std::string text = stderrText.substr(pos, end - pos);
-
-        fprintf(stderr, "Vinput: text = %s\n", text.c_str());
-        if (onR && !text.empty()) onR(text, true);
-        else if (onE) onE("Zipformer: empty result");
-    }).detach();
+        normalizeAndWriteWav(samples, wav);
+        runTranscribe(wav, dir, onR, onE);
+        recording_ = false;
+    });
 }
 
-void ZipformerAsrProvider::recordThread() {
+void ZipformerAsrProvider::stop() {
+    if (recording_) {
+        recording_ = false;
+        if (onState_) onState_(false);
+    }
+    // don't join — recording thread handles WAV + transcription async
+    if (recordThread_.joinable()) recordThread_.detach();
+}
+
+std::vector<int16_t> ZipformerAsrProvider::recordSamples() {
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
     ss.rate = 16000;
@@ -151,8 +80,7 @@ void ZipformerAsrProvider::recordThread() {
                              nullptr, "voice", &ss, nullptr, nullptr, &error);
     if (!pa) {
         fprintf(stderr, "Vinput: PulseAudio error: %s\n", pa_strerror(error));
-        recording_ = false;
-        return;
+        return {};
     }
 
     std::vector<int16_t> samples;
@@ -163,12 +91,11 @@ void ZipformerAsrProvider::recordThread() {
         samples.insert(samples.end(), p, p + sizeof(buf) / 2);
     }
     pa_simple_free(pa);
+    return samples;
+}
 
-    if (samples.empty()) {
-        recording_ = false;
-        return;
-    }
-
+void ZipformerAsrProvider::normalizeAndWriteWav(std::vector<int16_t> &samples,
+                                                 const std::string &wavPath) {
     int16_t maxAbs = 0;
     for (auto s : samples) {
         int16_t a = s >= 0 ? s : (int16_t)-s;
@@ -177,10 +104,8 @@ void ZipformerAsrProvider::recordThread() {
     fprintf(stderr, "Vinput: %zu samples, max_abs=%d\n",
             samples.size(), (int)maxAbs);
 
-    // --- EBU R128 loudness normalization ---
     auto *ebur = ebur128_init(1, 16000, EBUR128_MODE_I);
     ebur128_add_frames_short(ebur, samples.data(), samples.size());
-
     double loudness = 0.0;
     ebur128_loudness_global(ebur, &loudness);
     ebur128_destroy(&ebur);
@@ -188,15 +113,12 @@ void ZipformerAsrProvider::recordThread() {
     constexpr double kTargetLUFS = -16.0;
     double gain;
     if (loudness < -70.0 || !std::isfinite(loudness)) {
-        fprintf(stderr, "Vinput: audio too quiet (%.1f LUFS), skip normalization\n",
-                loudness);
+        fprintf(stderr, "Vinput: audio too quiet (%.1f LUFS), skip normalization\n", loudness);
         gain = 1.0;
     } else {
         gain = std::pow(10.0, (kTargetLUFS - loudness) / 20.0);
     }
-
-    fprintf(stderr, "Vinput: measured loudness %.1f LUFS, gain=%.2f\n",
-            loudness, gain);
+    fprintf(stderr, "Vinput: measured loudness %.1f LUFS, gain=%.2f\n", loudness, gain);
 
     for (auto &s : samples) {
         int32_t v = static_cast<int32_t>(s) * gain;
@@ -205,9 +127,8 @@ void ZipformerAsrProvider::recordThread() {
         s = static_cast<int16_t>(v);
     }
 
-    // --- write WAV ---
-    FILE *f = fopen(tempWavPath_.c_str(), "wb");
-    if (!f) { recording_ = false; return; }
+    FILE *f = fopen(wavPath.c_str(), "wb");
+    if (!f) return;
 
     long dataSize = (long)samples.size() * 2;
     fwrite("RIFF", 1, 4, f);
@@ -230,6 +151,91 @@ void ZipformerAsrProvider::recordThread() {
 
     fprintf(stderr, "Vinput: Zipformer recorded %ld samples (%ld bytes)\n",
             (long)samples.size(), dataSize);
+}
+
+void ZipformerAsrProvider::runTranscribe(const std::string &wav,
+                                          const std::string &dir,
+                                          AsrResultCallback onR,
+                                          AsrErrorCallback onE) {
+    auto sherpaBin = expandPath("~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx");
+    auto encoder  = dir + "/encoder-epoch-99-avg-1.onnx";
+    auto decoder  = dir + "/decoder-epoch-99-avg-1.onnx";
+    auto joiner   = dir + "/joiner-epoch-99-avg-1.onnx";
+    auto tokens   = dir + "/tokens.txt";
+
+    std::thread([=]() {
+        int outPipe[2], errPipe[2];
+        if (pipe(outPipe) < 0 || pipe(errPipe) < 0) {
+            if (onE) onE("Zipformer: pipe failed");
+            return;
+        }
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            if (onE) onE("Zipformer: fork failed");
+            close(outPipe[0]); close(outPipe[1]);
+            close(errPipe[0]); close(errPipe[1]);
+            return;
+        }
+
+        if (pid == 0) {
+            dup2(outPipe[1], STDOUT_FILENO);
+            dup2(errPipe[1], STDERR_FILENO);
+            close(outPipe[0]); close(outPipe[1]);
+            close(errPipe[0]); close(errPipe[1]);
+
+            std::string encArg = "--encoder=" + encoder;
+            std::string decArg = "--decoder=" + decoder;
+            std::string joiArg = "--joiner="  + joiner;
+            std::string tokArg = "--tokens="  + tokens;
+
+            execl(sherpaBin.c_str(), sherpaBin.c_str(),
+                  encArg.c_str(), decArg.c_str(), joiArg.c_str(), tokArg.c_str(),
+                  "--provider=cpu", "--num-threads=4",
+                  wav.c_str(), nullptr);
+            _exit(127);
+        }
+
+        close(outPipe[1]);
+        close(errPipe[1]);
+
+        auto readFd = [](int fd, std::string &out) {
+            char buf[4096];
+            ssize_t n;
+            while ((n = read(fd, buf, sizeof(buf))) > 0)
+                out.append(buf, (size_t)n);
+            close(fd);
+        };
+
+        std::string stdoutText, stderrText;
+        std::thread outReader(readFd, outPipe[0], std::ref(stdoutText));
+        readFd(errPipe[0], std::ref(stderrText));
+        outReader.join();
+
+        int status;
+        waitpid(pid, &status, 0);
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            fprintf(stderr, "Vinput: sherpa-onnx exited %d, stderr:\n%s\n",
+                    WEXITSTATUS(status), stderrText.c_str());
+            if (onE) onE("Zipformer: recognition failed");
+            return;
+        }
+
+        auto pos = stderrText.rfind("\"text\"");
+        if (pos == std::string::npos) {
+            if (onE) onE("Zipformer: no text in output");
+            return;
+        }
+
+        pos += 9;
+        auto end = stderrText.find('"', pos);
+        std::string text = stderrText.substr(pos, end - pos);
+
+        fprintf(stderr, "Vinput: text = %s\n", text.c_str());
+        if (onR && !text.empty()) onR(text, true);
+        else if (onE) onE("Zipformer: empty result");
+    }).detach();
 }
 
 std::unique_ptr<IAsrProvider> ZipformerAsrProviderFactory::create() {
