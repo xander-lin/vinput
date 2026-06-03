@@ -2,6 +2,31 @@
 
 ## 2026-06-03
 
+### CX31993 硬件占空比（录音尾部丢失根因）
+
+#### 发现过程
+- `tools/record_timing.cpp` 测试发现无论 buffer 大小（128/1024/4096），`pa_simple_read` 始终呈现 **~2s 阻塞 + ~2s burst（0ms reads）** 的 50% 占空比
+- 48kHz 原生采样率也如此，parecord 同效
+- 即使在录音同时另开一条常驻流读 48kHz，占空比不变
+- **结论**: CX31993 芯片硬件内部以 ~2s 为周期填充缓冲 → PulseAudio 瞬间取走（burst）→ 下一轮填充（阻塞 2s），任何持续读取都无法打破
+
+#### 后果
+- 4s 录音: 前 2s burst 被捕获，后 2s 落在下一轮填充期（丢失）
+- 这就是「后半段丢失」的根因
+
+#### 解决方案
+- **Drain**: `stop()` 后不立即停止录音，继续读直到检测到 2 次长阻塞（＞500ms）或 4s 超时
+  - 这确保了跨过一个完整 burst 周期，捕获尾部音频
+  - 代价: 松键后 1-4s 延迟出结果
+- **去掉 keep-alive**: keep-alive 流不能阻止 CX31993 的硬件占空比，是之前的误判
+
+#### 实测数据
+```
+4096 buf: 63 次, eff=80%, max=2036ms  ┐
+1024 buf: 251 次, eff=80%, max=2005ms ─ 完全一致
+128  buf: 2001 次, eff=80%, max=2005ms ┘
+```
+
 ### 豆包录音文件识别 API（非流式）
 
 #### API 流程
@@ -46,22 +71,10 @@
 - UUID 用 `getrandom()` 而非 `rand()`，避免冲突和时间种子质量差
 - 响度归一化（ebur128 → -16 LUFS）对云 ASR 同样有效，避免音量过低导致 20000003
 
-### PipeWire 录音效率问题 (核心)
-
-- 使用 `pa_simple_read(4096)` 录音, wall=6.06s 仅录到 audio=4.10s (效率 67%)
-- 逐次耗时: min=0ms, max=2005ms — PipeWire 每 ~2s 挂起一次 USB 源设备
-- 挂起一次需要 2s 唤醒, 中间 reads 以 0ms "爆发"吐出缓冲数据
-- 录音时长恰好卡在两个挂起周期间时, 尾巴丢失 (请求 1s 仅得 0.13s)
-- **根因**: PipeWire `node/suspend-node.lua` 默认 5s idle 后挂起, USB 设备 (CX31993) 每次 wake-up 需 ~2s
-- **解决**: 常驻录音流 — 构造时打开一条 `pa_simple` stream, 后台线程持续 reading
-  - 录音活跃时收集; 不活跃时丢弃
-  - 流只创建一次, 消除每轮 open 的 2s 惩罚 + 让 PipeWire 不挂起源
-
-#### 录音时长不足 - 深入分析
-- `pa_simple_new` 连接耗时仅 10ms, 不是瓶颈
-- 首次 `pa_simple_read` 要等 PipeWire 建图 (48kHz→16kHz 重采样 + S24LE→S16LE)
-- PipeWire 的 burst 模式: 每 ~2s 出一批 2s 数据, 批次间挂起
-- `session.suspend-timeout-seconds` 默认 5s, 但 USB 设备底层另有 2s 的 GPIO 唤醒开销
+### PipeWire/PA 录音（keep-alive 被证实为误判，见上方 CX31993 条目）
+- ~~使用 pa_simple_read 录音效率仅 67%~~ → 实际是 CX31993 硬件占空比
+- ~~PipeWire suspend-node 导致设备挂起~~ → 测试证明加常驻流也无法阻止
+- ~~常驻录音流解决~~ → keep-alive 流已移除，替换为按需录音 + drain
 
 ### Zipformer 调试
 

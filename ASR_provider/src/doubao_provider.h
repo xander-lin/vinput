@@ -4,9 +4,9 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
-#include <condition_variable>
 #include <vector>
 #include <cstdint>
+#include <chrono>
 #include "asr_provider.h"
 
 struct pa_simple;
@@ -23,7 +23,7 @@ public:
     void setConfig(const std::string &key, const std::string &value) override;
 
 private:
-    void keepAliveLoop();
+    void recordLoop();
     void processRecording(std::vector<int16_t> samples,
                           const std::string &wavPath,
                           AsrResultCallback onR, AsrErrorCallback onE);
@@ -31,15 +31,10 @@ private:
     std::string apiKey_;
     std::string resourceId_;
 
-    pa_simple *paStream_ = nullptr;
-    std::thread keepAliveThread_;
-    std::atomic<bool> keepRunning_{true};
-
-    std::atomic<bool> recording_{false};
+    std::thread recordThread_;
+    std::atomic<bool> stopRequested_{false};
     std::mutex sampleMutex_;
     std::vector<int16_t> samples_;
-    std::condition_variable stopCv_;
-    std::atomic<bool> stopRequested_{false};
 
     std::string sessionWav_;
     AsrResultCallback sessionOnR_;

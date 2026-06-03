@@ -23,14 +23,11 @@ static std::string expandPath(const std::string &p) {
 }
 
 ZipformerAsrProvider::ZipformerAsrProvider()
-    : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {
-    // 启动常驻录音流，防止 PipeWire 挂起 USB 设备
-    keepAliveThread_ = std::thread(&ZipformerAsrProvider::keepAliveLoop, this);
-}
+    : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {}
 
 ZipformerAsrProvider::~ZipformerAsrProvider() {
-    keepRunning_ = false;
-    if (keepAliveThread_.joinable()) keepAliveThread_.join();
+    stopRequested_ = true;
+    if (recordThread_.joinable()) recordThread_.join();
 }
 
 void ZipformerAsrProvider::setConfig(const std::string &key,
@@ -38,82 +35,96 @@ void ZipformerAsrProvider::setConfig(const std::string &key,
     if (key == "model_dir") modelDir_ = value;
 }
 
-void ZipformerAsrProvider::keepAliveLoop() {
+void ZipformerAsrProvider::recordLoop() {
+    using Clock = std::chrono::steady_clock;
+
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
     ss.rate = 16000;
     ss.channels = 1;
 
     int error = 0;
-    paStream_ = pa_simple_new(nullptr, "vinput-keep", PA_STREAM_RECORD,
-                              nullptr, "voice", &ss, nullptr, nullptr, &error);
-    if (!paStream_) {
-        fprintf(stderr, "Vinput: keep-alive PA error: %s\n", pa_strerror(error));
+    pa_simple *pa = pa_simple_new(nullptr, "vinput-zip", PA_STREAM_RECORD,
+                                  nullptr, "voice", &ss, nullptr, nullptr, &error);
+    if (!pa) {
+        fprintf(stderr, "Vinput: PA error: %s\n", pa_strerror(error));
+        if (onError_) onError_("Zipformer: microphone open failed");
         return;
     }
-    fprintf(stderr, "Vinput: keep-alive stream started\n");
 
+    // --- 录音阶段 ---
     uint8_t buf[4096];
-    while (keepRunning_) {
-        if (pa_simple_read(paStream_, buf, sizeof(buf), &error) < 0) {
-            fprintf(stderr, "Vinput: keep-alive read error: %s\n", pa_strerror(error));
-            break;
-        }
+    while (!stopRequested_) {
+        if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
+        auto *p = reinterpret_cast<int16_t *>(buf);
+        std::lock_guard<std::mutex> lk(sampleMutex_);
+        samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
+    }
 
-        if (recording_) {
-            auto *p = reinterpret_cast<int16_t *>(buf);
+    if (onState_) onState_(false);
+
+    // --- Drain 阶段 ---
+    auto drainStart = Clock::now();
+    auto lastRead = drainStart;
+    int longBlockCount = 0;
+    constexpr double kMaxDrainMs = 4000;
+
+    while (true) {
+        if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
+        auto *p = reinterpret_cast<int16_t *>(buf);
+        {
             std::lock_guard<std::mutex> lk(sampleMutex_);
             samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
         }
 
-        if (stopRequested_) {
-            // 取出累积的样本，释放锁后处理
-            std::vector<int16_t> batch;
-            {
-                std::lock_guard<std::mutex> lk(sampleMutex_);
-                batch.swap(samples_);
-            }
+        auto now = Clock::now();
+        double readMs = std::chrono::duration<double, std::milli>(now - lastRead).count();
+        lastRead = now;
 
-            auto wav = sessionWav_;
-            auto dir = sessionDir_;
-            auto onR = sessionOnR_;
-            auto onE = sessionOnE_;
+        if (readMs > 500) longBlockCount++;
 
-            recording_ = false;
-            stopRequested_ = false;
-            stopCv_.notify_all();
-
-            if (!batch.empty()) {
-                processRecording(std::move(batch), wav, dir, onR, onE);
-            }
-        }
+        double drainMs = std::chrono::duration<double, std::milli>(now - drainStart).count();
+        if (longBlockCount >= 2 || drainMs >= kMaxDrainMs) break;
     }
 
-    if (paStream_) {
-        pa_simple_free(paStream_);
-        paStream_ = nullptr;
+    pa_simple_free(pa);
+
+    // --- 处理 ---
+    std::vector<int16_t> batch;
+    {
+        std::lock_guard<std::mutex> lk(sampleMutex_);
+        batch.swap(samples_);
+    }
+
+    auto wav = sessionWav_;
+    auto dir = sessionDir_;
+    auto onR = sessionOnR_;
+    auto onE = sessionOnE_;
+
+    if (!batch.empty()) {
+        processRecording(std::move(batch), wav, dir, onR, onE);
     }
 }
 
 void ZipformerAsrProvider::start() {
-    if (recording_) return;
+    if (recordThread_.joinable()) return;
     {
         std::lock_guard<std::mutex> lk(sampleMutex_);
         samples_.clear();
     }
+    stopRequested_ = false;
     sessionWav_ = "/tmp/vinput_zip_" + std::to_string(getpid()) + "_"
                   + std::to_string(time(nullptr)) + ".wav";
     sessionDir_ = expandPath(modelDir_);
     sessionOnR_ = onResult_;
     sessionOnE_ = onError_;
-    recording_ = true;
     if (onState_) onState_(true);
+    recordThread_ = std::thread(&ZipformerAsrProvider::recordLoop, this);
 }
 
 void ZipformerAsrProvider::stop() {
-    if (!recording_) return;
-    if (onState_) onState_(false);
     stopRequested_ = true;
+    if (onState_) onState_(false);
 }
 
 void ZipformerAsrProvider::processRecording(std::vector<int16_t> samples,

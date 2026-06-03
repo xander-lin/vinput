@@ -51,8 +51,8 @@ static std::string generateUuid() {
         for (size_t i = 0; i < sizeof(r); i++)
             r[i] = (uint8_t)(rand() ^ (time(nullptr) * (i + 1)));
     }
-    r[6] = (r[6] & 0x0F) | 0x40; // version 4
-    r[8] = (r[8] & 0x3F) | 0x80; // variant 1
+    r[6] = (r[6] & 0x0F) | 0x40;
+    r[8] = (r[8] & 0x3F) | 0x80;
     char buf[37];
     snprintf(buf, sizeof(buf),
              "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
@@ -161,12 +161,11 @@ static bool writeWav(std::vector<int16_t> &samples, const std::string &path) {
 
 DoubaoAsrProvider::DoubaoAsrProvider() {
     loadConfig(apiKey_, resourceId_);
-    keepAliveThread_ = std::thread(&DoubaoAsrProvider::keepAliveLoop, this);
 }
 
 DoubaoAsrProvider::~DoubaoAsrProvider() {
-    keepRunning_ = false;
-    if (keepAliveThread_.joinable()) keepAliveThread_.join();
+    stopRequested_ = true;
+    if (recordThread_.joinable()) recordThread_.join();
 }
 
 void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &value) {
@@ -174,79 +173,96 @@ void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &val
     else if (key == "resource_id") resourceId_ = value;
 }
 
-void DoubaoAsrProvider::keepAliveLoop() {
+void DoubaoAsrProvider::recordLoop() {
+    using Clock = std::chrono::steady_clock;
+
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
     ss.rate = 16000;
     ss.channels = 1;
 
     int error = 0;
-    paStream_ = pa_simple_new(nullptr, "vinput-doubao", PA_STREAM_RECORD,
-                              nullptr, "voice", &ss, nullptr, nullptr, &error);
-    if (!paStream_) {
-        fprintf(stderr, "Vinput Doubao: keep-alive PA error: %s\n", pa_strerror(error));
+    pa_simple *pa = pa_simple_new(nullptr, "vinput-doubao", PA_STREAM_RECORD,
+                                  nullptr, "voice", &ss, nullptr, nullptr, &error);
+    if (!pa) {
+        fprintf(stderr, "Vinput Doubao: PA error: %s\n", pa_strerror(error));
+        if (onError_) onError_("Doubao: microphone open failed");
         return;
     }
-    fprintf(stderr, "Vinput Doubao: keep-alive stream started\n");
 
+    // --- 录音阶段 ---
     uint8_t buf[4096];
-    while (keepRunning_) {
-        if (pa_simple_read(paStream_, buf, sizeof(buf), &error) < 0) {
-            fprintf(stderr, "Vinput Doubao: keep-alive read error: %s\n", pa_strerror(error));
-            break;
-        }
+    while (!stopRequested_) {
+        if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
+        auto *p = reinterpret_cast<int16_t *>(buf);
+        std::lock_guard<std::mutex> lk(sampleMutex_);
+        samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
+    }
 
-        if (recording_) {
-            auto *p = reinterpret_cast<int16_t *>(buf);
+    if (onState_) onState_(false);
+
+    // --- Drain 阶段: 等待下一个 burst 以捕获尾部音频 ---
+    // CX31993 芯片有 ~2s burst / ~2s buffering 的硬件占空比。
+    // 计数两次长阻塞 (>500ms) 确保跨过一个完整的 burst 周期。
+    auto drainStart = Clock::now();
+    auto lastRead = drainStart;
+    int longBlockCount = 0;
+    constexpr double kMaxDrainMs = 4000;
+
+    while (true) {
+        if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
+        auto *p = reinterpret_cast<int16_t *>(buf);
+        {
             std::lock_guard<std::mutex> lk(sampleMutex_);
             samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
         }
 
-        if (stopRequested_) {
-            std::vector<int16_t> batch;
-            {
-                std::lock_guard<std::mutex> lk(sampleMutex_);
-                batch.swap(samples_);
-            }
+        auto now = Clock::now();
+        double readMs = std::chrono::duration<double, std::milli>(now - lastRead).count();
+        lastRead = now;
 
-            auto wav = sessionWav_;
-            auto onR = sessionOnR_;
-            auto onE = sessionOnE_;
+        if (readMs > 500) longBlockCount++;
 
-            recording_ = false;
-            stopRequested_ = false;
-            stopCv_.notify_all();
-
-            if (!batch.empty()) {
-                processRecording(std::move(batch), wav, onR, onE);
-            }
-        }
+        double drainMs = std::chrono::duration<double, std::milli>(now - drainStart).count();
+        if (longBlockCount >= 2 || drainMs >= kMaxDrainMs) break;
     }
 
-    if (paStream_) {
-        pa_simple_free(paStream_);
-        paStream_ = nullptr;
+    pa_simple_free(pa);
+
+    // --- 处理 ---
+    std::vector<int16_t> batch;
+    {
+        std::lock_guard<std::mutex> lk(sampleMutex_);
+        batch.swap(samples_);
+    }
+
+    auto wav = sessionWav_;
+    auto onR = sessionOnR_;
+    auto onE = sessionOnE_;
+
+    if (!batch.empty()) {
+        processRecording(std::move(batch), wav, onR, onE);
     }
 }
 
 void DoubaoAsrProvider::start() {
-    if (recording_) return;
+    if (recordThread_.joinable()) return;
     {
         std::lock_guard<std::mutex> lk(sampleMutex_);
         samples_.clear();
     }
+    stopRequested_ = false;
     sessionWav_ = "/tmp/vinput_doubao_" + std::to_string(getpid()) + "_"
                   + std::to_string(time(nullptr)) + ".wav";
     sessionOnR_ = onResult_;
     sessionOnE_ = onError_;
-    recording_ = true;
     if (onState_) onState_(true);
+    recordThread_ = std::thread(&DoubaoAsrProvider::recordLoop, this);
 }
 
 void DoubaoAsrProvider::stop() {
-    if (!recording_) return;
-    if (onState_) onState_(false);
     stopRequested_ = true;
+    if (onState_) onState_(false);
 }
 
 void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
@@ -283,7 +299,6 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
 
         std::string taskId = generateUuid();
 
-        // --- 提交任务 ---
         {
             CURL *curl = curl_easy_init();
             if (!curl) {
@@ -346,8 +361,7 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
             }
         }
 
-        // --- 轮询结果 ---
-        constexpr int kMaxPoll = 75;  // 75 × 800ms = 60s
+        constexpr int kMaxPoll = 75;
         for (int pollCount = 1; pollCount <= kMaxPoll; pollCount++) {
             usleep(800000);
 
@@ -396,13 +410,11 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
                 fprintf(stderr, "Vinput Doubao: result=\"%s\" (polled %d)\n",
                         text.c_str(), pollCount);
                 if (onR) onR(text, true);
-                unlink(wavPath.c_str());
                 return;
             }
             if (statusCode == "20000003") {
                 fprintf(stderr, "Vinput Doubao: no speech detected\n");
                 if (onR) onR("", true);
-                unlink(wavPath.c_str());
                 return;
             }
             if (statusCode != "20000001" && statusCode != "20000002") {
