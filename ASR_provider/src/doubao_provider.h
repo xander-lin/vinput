@@ -22,21 +22,29 @@ public:
     void setConfig(const std::string &key, const std::string &value) override;
 
 private:
-    std::string scriptPath_;
+    void keepAliveLoop();
+    bool wsConnect();
+    void wsSendFrame(uint8_t msgType, uint8_t flags, const void *payload, uint32_t len);
+    bool wsRecvFrame(std::string &out);
+    bool parseResponse(const std::string &json, std::string &text, bool &definite);
+
+    std::string apiKey_;
+    std::string resourceId_;
     std::string tempWavPath_;
 
-    // 常驻录音流 (单线程 keep-alive + 录音发送)
+    // 常驻 PA 流
     pa_simple *paStream_ = nullptr;
     std::thread keepAliveThread_;
     std::atomic<bool> keepAliveRunning_{true};
     std::atomic<bool> sendRunning_{false};
-    std::mutex sendMutex_;
-    int sendFd_ = -1;
-    std::vector<int16_t> allSamples_;
+    std::mutex sampleMutex_;
+    std::vector<int16_t> samples_;
 
-    // 子进程
-    int recvFd_ = -1;
-    pid_t childPid_ = 0;
+    // WebSocket
+    void *curl_ = nullptr;
+
+    // 线程安全
+    std::mutex wsMutex_;  // curl_ 非线程安全, 串行化 send/recv
 };
 
 class DoubaoAsrProviderFactory : public IAsrProviderFactory {
