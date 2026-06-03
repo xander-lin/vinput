@@ -31,6 +31,9 @@
 #include "asr_provider.h"
 #include "mock_provider.h"         // 确保 Mock 后端被链接并自动注册
 
+// notifications addon 公共 API (跨 addon 调用, 仅用于显示切换信息)
+#include <fcitx-module/notifications/notifications_public.h>
+
 static std::string expandPath(const std::string &p) {
     if (!p.empty() && p[0] == '~') {
         const char *h = getenv("HOME");
@@ -166,6 +169,9 @@ private:
     std::mutex pendingMutex_;
     std::vector<std::pair<fcitx::ICUUID, std::string>> pendingCommits_;
 
+    // 运行时依赖: notifications addon (仅用于切换显示)
+    FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
+
     // 提示音: 播放预生成的 WAV
     static void playSound(const std::string &name) {
         std::thread([name]() {
@@ -283,6 +289,16 @@ private:
         if (list.empty()) return false;
 
         providerIndex_ = (providerIndex_ + direction + (int)list.size()) % (int)list.size();
+        const auto &[nextId, nextName] = list[providerIndex_];
+
+        // 通知用户即将切换到哪个后端 (在实际停止/创建之前)
+        auto total = (int)list.size();
+        auto msg = nextName + " (" + std::to_string(providerIndex_ + 1)
+                   + "/" + std::to_string(total) + ")";
+        notifications()->call<fcitx::INotifications::sendNotification>(
+            "fcitx5-vinput", 0, "fcitx-vinput",
+            "Vinput", msg,
+            std::vector<std::string>{}, 2000, nullptr, nullptr);
 
         // 停止当前后端, 创建新后端
         if (asr_) {
@@ -290,9 +306,8 @@ private:
             asr_.reset();
         }
 
-        const auto &[id, name] = list[providerIndex_];
-        FCITX_INFO() << "Vinput switch ASR provider: " << name;
-        asr_ = vinput::AsrProviderRegistry::instance().create(id);
+        FCITX_INFO() << "Vinput switch ASR provider: " << nextName;
+        asr_ = vinput::AsrProviderRegistry::instance().create(nextId);
 
         if (asr_) {
             applyAsrConfig();
@@ -301,7 +316,7 @@ private:
         }
 
         // 保存为默认
-        config_.defaultProvider.setValue(id);
+        config_.defaultProvider.setValue(nextId);
         safeSaveAsIni(config_, confFile);
 
         // 切换音: 短促中音
