@@ -5,6 +5,7 @@
 #include <fcitx/instance.h>        // Instance, fcitx 服务器实例
 #include <fcitx/event.h>           // KeyEvent
 #include <fcitx/inputcontext.h>    // InputContext
+#include <fcitx/inputcontextmanager.h>  // findByUUID
 #include <fcitx-config/configuration.h>   // FCITX_CONFIGURATION
 #include <fcitx-config/iniparser.h>       // readAsIni, safeSaveAsIni
 #include <fcitx-utils/i18n.h>             // _() translation macro
@@ -128,6 +129,7 @@ private:
     // 状态
     bool active_ = false;
     std::unique_ptr<fcitx::EventSourceTime> timer_;
+    std::unique_ptr<fcitx::EventSource> pendingCommit_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
     int providerIndex_ = 0; // 当前使用的 ASR 后端在列表中的索引
@@ -302,11 +304,22 @@ private:
     void onAsrResult(const std::string &text, bool isFinal) {
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
-        if (isFinal && currentIC_) {
-            currentIC_->commitString(text);
-            currentIC_->updateUserInterface(
-                fcitx::UserInterfaceComponent::InputPanel);
-        }
+        if (!isFinal || !currentIC_) return;
+
+        // commitString 必须从 fcitx5 主事件循环线程调用
+        auto icUuid = currentIC_->uuid();
+        auto txt = text;
+        pendingCommit_ = instance_->eventLoop().addDeferEvent(
+            [this, icUuid, txt](fcitx::EventSource *) -> bool {
+                auto *ic = instance_->inputContextManager().findByUUID(icUuid);
+                if (ic) {
+                    ic->commitString(txt);
+                    ic->updateUserInterface(
+                        fcitx::UserInterfaceComponent::InputPanel);
+                }
+                pendingCommit_.reset();
+                return false;
+            });
     }
 
     // ASR 错误回调
