@@ -2,6 +2,50 @@
 
 ## 2026-06-03
 
+### 豆包录音文件识别 API（非流式）
+
+#### API 流程
+- **提交任务**: `POST /api/v3/auc/bigmodel/submit` → 返回 `X-Api-Status-Code: 20000000`
+- **轮询结果**: `POST /api/v3/auc/bigmodel/query` → 直到 `20000000`（成功）、`20000003`（静音）或超时
+- **比流式更适合语音输入**: 先录完再识别，结果一次返回，不需要处理 preedit 中间态
+
+#### audio.data 字段（内联音频）
+- 官方文档只有 `audio.url`，但 **`audio.data`（base64 编码）实测可用**
+- `format:"wav"` + `data:"<base64>"` 提交成功，服务端正常解码
+- 注意：`format:"raw"` 会返回 `45000151`（音频格式不正确），服务端无法解析裸 PCM
+- base64 大小：4 秒 16kHz mono WAV ≈ 174KB，在 curl 的默认限制内
+
+#### Header 解析陷阱
+- 服务端返回的 header 名是**小写** `x-api-status-code`（不是 `X-Api-Status-Code`）
+- `access-control-expose-headers` 头里**恰好包含字串** `X-Api-Status-Code`
+- 用 `find("X-Api-Status-Code")` 会命中 `access-control-expose-headers` 而非真正的 status header
+- **修复**: 匹配 `\n<name>:` 模式，确保匹配的是独立的 header 行而非其他 header 的值
+
+#### 错误码
+| 错误码 | 含义 | 处理 |
+|--------|------|------|
+| 20000000 | 成功 | 提取 `result.text` |
+| 20000001/2 | 处理中 | 继续轮询 |
+| 20000003 | 静音音频 | 返回空文本，不报错 |
+| 45000151 | 音频格式不正确 | format/编码不匹配 |
+| 45000001 | 参数无效 | 检查必填字段 |
+
+#### 轮询策略
+- 间隔 800ms，最长 60 秒（75 次）
+- 每次 `curl_easy_init/cleanup` 新建连接，避免复用导致的状态问题
+- HTTP 层超时设为 15s，curl 错误时 continue 重试
+
+#### 配置
+- 文件: `~/.config/vinput/doubao.json`
+- 格式: `{"api_key":"xxx", "resource_id":"volc.seedasr.auc"}`
+- 资源 ID: `volc.bigasr.auc` (1.0 小时版) / `volc.seedasr.auc` (2.0)
+
+#### 实现注意事项
+- **不需要 keep-alive 流**也可以（zipformer 的 keep-alive 是为了防 PipeWire 挂起），共用 zipformer 的常驻流模式
+- `curl_global_init(CURL_GLOBAL_ALL)` 必须在任何 curl 操作前调用（静态初始化器）
+- UUID 用 `getrandom()` 而非 `rand()`，避免冲突和时间种子质量差
+- 响度归一化（ebur128 → -16 LUFS）对云 ASR 同样有效，避免音量过低导致 20000003
+
 ### PipeWire 录音效率问题 (核心)
 
 - 使用 `pa_simple_read(4096)` 录音, wall=6.06s 仅录到 audio=4.10s (效率 67%)

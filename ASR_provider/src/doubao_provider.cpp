@@ -2,69 +2,42 @@
 
 #include <pulse/simple.h>
 #include <pulse/error.h>
+#include <curl/curl.h>
 #include <unistd.h>
+#include <sys/random.h>
 #include <cstdio>
 #include <cstring>
-#include <cstdlib>
 #include <ctime>
-#include <string>
-#include <vector>
-#include <thread>
-#include <mutex>
-#include <cstdint>
-#include <arpa/inet.h>  // htonl
-
-#include <curl/curl.h>
+#include <cmath>
+#include <fstream>
+#include <memory>
+#include <ebur128.h>
 
 namespace vinput {
 
-static std::string expandPath(const std::string &p) {
-    if (!p.empty() && p[0] == '~') {
-        const char *h = getenv("HOME");
-        if (h) return std::string(h) + p.substr(1);
+static std::string base64Encode(const uint8_t *data, size_t len) {
+    static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((len + 2) / 3 * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t v = (uint32_t)data[i] << 16;
+        if (i + 1 < len) v |= (uint32_t)data[i + 1] << 8;
+        if (i + 2 < len) v |= data[i + 2];
+        out += T[(v >> 18) & 0x3F];
+        out += T[(v >> 12) & 0x3F];
+        out += (i + 1 < len) ? T[(v >> 6) & 0x3F] : '=';
+        out += (i + 2 < len) ? T[v & 0x3F] : '=';
     }
-    return p;
+    return out;
 }
 
-static void writeWav(const std::vector<int16_t> &samples, const std::string &path) {
-    FILE *f = fopen(path.c_str(), "wb");
-    if (!f) return;
-    long ds = (long)samples.size() * 2;
-    fwrite("RIFF",1,4,f);
-    uint32_t cs=36+(uint32_t)ds; fwrite(&cs,4,1,f);
-    fwrite("WAVE",1,4,f); fwrite("fmt ",1,4,f);
-    uint32_t s1=16, sr=16000, br=32000;
-    uint16_t ff=1, ch=1, bps=16, ba=2;
-    fwrite(&s1,4,1,f);fwrite(&ff,2,1,f);fwrite(&ch,2,1,f);
-    fwrite(&sr,4,1,f);fwrite(&br,4,1,f);fwrite(&ba,2,1,f);fwrite(&bps,2,1,f);
-    fwrite("data",1,4,f); fwrite(&ds,4,1,f);
-    fwrite(samples.data(),2,samples.size(),f);
-    fclose(f);
-}
-
-// --- Doubao 二进制帧 ---
-static std::vector<uint8_t> buildFrame(uint8_t msgType, uint8_t flags,
-                                        const void *payload, uint32_t len) {
-    std::vector<uint8_t> frame(8 + len);
-    frame[0] = 0x11;  // version=1, header_size=4
-    frame[1] = (uint8_t)((msgType << 4) | flags);
-    frame[2] = (msgType == 0x01) ? 0x10 : 0x00;  // JSON for full req, raw for audio
-    frame[3] = 0x00;
-    uint32_t sz = htonl(len);
-    memcpy(&frame[4], &sz, 4);
-    if (len > 0) memcpy(&frame[8], payload, len);
-    return frame;
-}
-
-// --- 简单 JSON 解析 (不依赖 external lib) ---
-static std::string jsonGetString(const std::string &json, const char *key) {
-    // 搜 \"key\"
-    std::string pat = "\"" + std::string(key) + "\"";
-    auto pos = json.find(pat);
+static std::string jsonGetString(const std::string &json, const std::string &key) {
+    std::string q = "\"" + key + "\"";
+    auto pos = json.find(q);
     if (pos == std::string::npos) return "";
-    pos += pat.size();
-    // 跳过 ": "
-    while (pos < json.size() && (json[pos] == ':' || json[pos] == ' ')) pos++;
+    pos += q.size();
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == ':' || json[pos] == '\t'))
+        pos++;
     if (pos >= json.size() || json[pos] != '"') return "";
     pos++;
     auto end = json.find('"', pos);
@@ -72,42 +45,128 @@ static std::string jsonGetString(const std::string &json, const char *key) {
     return json.substr(pos, end - pos);
 }
 
-static bool jsonGetBool(const std::string &json, const char *key) {
-    std::string pat = "\"" + std::string(key) + "\"";
-    auto pos = json.find(pat);
-    if (pos == std::string::npos) return false;
-    pos += pat.size();
-    while (pos < json.size() && (json[pos] == ':' || json[pos] == ' ')) pos++;
-    return pos < json.size() && (json[pos] == 't' || json[pos] == 'T');
+static std::string generateUuid() {
+    uint8_t r[16];
+    if (getrandom(r, sizeof(r), 0) != (ssize_t)sizeof(r)) {
+        for (size_t i = 0; i < sizeof(r); i++)
+            r[i] = (uint8_t)(rand() ^ (time(nullptr) * (i + 1)));
+    }
+    r[6] = (r[6] & 0x0F) | 0x40; // version 4
+    r[8] = (r[8] & 0x3F) | 0x80; // variant 1
+    char buf[37];
+    snprintf(buf, sizeof(buf),
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],
+             r[8],r[9],r[10],r[11],r[12],r[13],r[14],r[15]);
+    return buf;
+}
+
+static size_t writeCb(void *ptr, size_t size, size_t nmemb, std::string *out) {
+    out->append((const char *)ptr, size * nmemb);
+    return size * nmemb;
+}
+
+static size_t headerCb(void *ptr, size_t size, size_t nmemb, std::string *out) {
+    out->append((const char *)ptr, size * nmemb);
+    return size * nmemb;
+}
+
+static std::string getHeader(const std::string &headers, const std::string &name) {
+    std::string pattern = "\n" + name + ":";
+    auto pos = headers.find(pattern);
+    if (pos == std::string::npos) {
+        if (headers.size() >= name.size() + 1 &&
+            headers.substr(0, name.size()) == name && headers[name.size()] == ':') {
+            pos = 0;
+        } else {
+            return "";
+        }
+    } else {
+        pos++;
+    }
+    pos += name.size() + 1;
+    while (pos < headers.size() && headers[pos] == ' ') pos++;
+    std::string value;
+    while (pos < headers.size() && headers[pos] != '\r' && headers[pos] != '\n') {
+        if (headers[pos] != ' ') value += headers[pos];
+        pos++;
+    }
+    return value;
+}
+
+static void loadConfig(std::string &apiKey, std::string &resourceId) {
+    const char *home = getenv("HOME");
+    if (!home) return;
+    std::string path = std::string(home) + "/.config/vinput/doubao.json";
+    std::ifstream f(path);
+    if (!f) {
+        fprintf(stderr, "Vinput Doubao: no config at %s\n", path.c_str());
+        return;
+    }
+    std::string json((std::istreambuf_iterator<char>(f)),
+                      std::istreambuf_iterator<char>());
+    apiKey = jsonGetString(json, "api_key");
+    resourceId = jsonGetString(json, "resource_id");
+}
+
+static bool writeWav(std::vector<int16_t> &samples, const std::string &path) {
+    ebur128_state *ebur = ebur128_init(1, 16000, EBUR128_MODE_I);
+    ebur128_add_frames_short(ebur, samples.data(), samples.size());
+    double loudness = 0.0;
+    ebur128_loudness_global(ebur, &loudness);
+    ebur128_destroy(&ebur);
+
+    constexpr double kTargetLUFS = -16.0;
+    double gain;
+    if (loudness < -70.0 || !std::isfinite(loudness)) {
+        fprintf(stderr, "Vinput Doubao: audio too quiet (%.1f LUFS), skip norm\n", loudness);
+        gain = 1.0;
+    } else {
+        gain = std::pow(10.0, (kTargetLUFS - loudness) / 20.0);
+    }
+    fprintf(stderr, "Vinput Doubao: loudness %.1f LUFS, gain=%.2f\n", loudness, gain);
+
+    for (auto &s : samples) {
+        int32_t v = static_cast<int32_t>(s) * gain;
+        if (v > 32767) v = 32767;
+        if (v < -32768) v = -32768;
+        s = static_cast<int16_t>(v);
+    }
+
+    FILE *f = fopen(path.c_str(), "wb");
+    if (!f) {
+        fprintf(stderr, "Vinput Doubao: cannot write WAV to %s\n", path.c_str());
+        return false;
+    }
+
+    long dataSize = (long)samples.size() * 2;
+    fwrite("RIFF", 1, 4, f);
+    uint32_t chunkSize = 36 + (uint32_t)dataSize;
+    fwrite(&chunkSize, 4, 1, f);
+    fwrite("WAVE", 1, 4, f);
+    fwrite("fmt ", 1, 4, f);
+    uint32_t sub1 = 16, sr = 16000, br = 32000;
+    uint16_t fmtTag = 1, ch = 1, bps = 16, ba = 2;
+    fwrite(&sub1, 4, 1, f); fwrite(&fmtTag, 2, 1, f);
+    fwrite(&ch, 2, 1, f); fwrite(&sr, 4, 1, f);
+    fwrite(&br, 4, 1, f); fwrite(&ba, 2, 1, f);
+    fwrite(&bps, 2, 1, f);
+    fwrite("data", 1, 4, f);
+    uint32_t ds = (uint32_t)dataSize;
+    fwrite(&ds, 4, 1, f);
+    fwrite(samples.data(), 2, samples.size(), f);
+    fclose(f);
+    return true;
 }
 
 DoubaoAsrProvider::DoubaoAsrProvider() {
-    apiKey_ = "3a38c481-50bc-4cce-aaca-3cdf4e82c624";
-    resourceId_ = "volc.bigasr.sauc.duration";
-
-    // 常驻录音流
-    pa_sample_spec ss;
-    ss.format = PA_SAMPLE_S16LE;
-    ss.rate = 16000;
-    ss.channels = 1;
-    int error = 0;
-    paStream_ = pa_simple_new(nullptr, "vinput-doubao-keep",
-                              PA_STREAM_RECORD, nullptr, "voice",
-                              &ss, nullptr, nullptr, &error);
-    if (!paStream_) {
-        fprintf(stderr, "Vinput Doubao: keep-alive PA error: %s\n", pa_strerror(error));
-        return;
-    }
-    fprintf(stderr, "Vinput Doubao: keep-alive stream started\n");
-
-    keepAliveThread_ = std::thread([this]() { keepAliveLoop(); });
+    loadConfig(apiKey_, resourceId_);
+    keepAliveThread_ = std::thread(&DoubaoAsrProvider::keepAliveLoop, this);
 }
 
 DoubaoAsrProvider::~DoubaoAsrProvider() {
-    keepAliveRunning_ = false;
+    keepRunning_ = false;
     if (keepAliveThread_.joinable()) keepAliveThread_.join();
-    if (paStream_) { pa_simple_free(paStream_); paStream_ = nullptr; }
-    if (curl_) { curl_easy_cleanup((CURL *)curl_); curl_ = nullptr; }
 }
 
 void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &value) {
@@ -116,205 +175,258 @@ void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &val
 }
 
 void DoubaoAsrProvider::keepAliveLoop() {
-    uint8_t buf[6400];
-    int err = 0;
-    while (keepAliveRunning_) {
-        if (pa_simple_read(paStream_, buf, sizeof(buf), &err) < 0) {
-            fprintf(stderr, "Vinput Doubao: keep-alive read error: %s\n",
-                    pa_strerror(err));
+    pa_sample_spec ss;
+    ss.format = PA_SAMPLE_S16LE;
+    ss.rate = 16000;
+    ss.channels = 1;
+
+    int error = 0;
+    paStream_ = pa_simple_new(nullptr, "vinput-doubao", PA_STREAM_RECORD,
+                              nullptr, "voice", &ss, nullptr, nullptr, &error);
+    if (!paStream_) {
+        fprintf(stderr, "Vinput Doubao: keep-alive PA error: %s\n", pa_strerror(error));
+        return;
+    }
+    fprintf(stderr, "Vinput Doubao: keep-alive stream started\n");
+
+    uint8_t buf[4096];
+    while (keepRunning_) {
+        if (pa_simple_read(paStream_, buf, sizeof(buf), &error) < 0) {
+            fprintf(stderr, "Vinput Doubao: keep-alive read error: %s\n", pa_strerror(error));
             break;
         }
-        if (sendRunning_) {
-            std::lock_guard<std::mutex> lk(sampleMutex_);
+
+        if (recording_) {
             auto *p = reinterpret_cast<int16_t *>(buf);
+            std::lock_guard<std::mutex> lk(sampleMutex_);
             samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
-            allSamples_.insert(allSamples_.end(), p, p + sizeof(buf) / 2);
+        }
+
+        if (stopRequested_) {
+            std::vector<int16_t> batch;
+            {
+                std::lock_guard<std::mutex> lk(sampleMutex_);
+                batch.swap(samples_);
+            }
+
+            auto wav = sessionWav_;
+            auto onR = sessionOnR_;
+            auto onE = sessionOnE_;
+
+            recording_ = false;
+            stopRequested_ = false;
+            stopCv_.notify_all();
+
+            if (!batch.empty()) {
+                processRecording(std::move(batch), wav, onR, onE);
+            }
         }
     }
-}
 
-bool DoubaoAsrProvider::wsConnect() {
-    if (curl_) { curl_easy_cleanup((CURL *)curl_); curl_ = nullptr; }
-
-    CURL *c = curl_easy_init();
-    if (!c) return false;
-
-    struct curl_slist *headers = nullptr;
-    headers = curl_slist_append(headers, ("X-Api-Key: " + apiKey_).c_str());
-    headers = curl_slist_append(headers, ("X-Api-Resource-Id: " + resourceId_).c_str());
-    headers = curl_slist_append(headers, "X-Api-Request-Id: vinput-doubao");
-    headers = curl_slist_append(headers, "X-Api-Sequence: -1");
-
-    curl_easy_setopt(c, CURLOPT_URL,
-                     "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel");
-    curl_easy_setopt(c, CURLOPT_CONNECT_ONLY, 2L);
-    curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
-
-    CURLcode res = curl_easy_perform(c);
-    curl_slist_free_all(headers);
-
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Vinput Doubao: WS connect failed: %s\n", curl_easy_strerror(res));
-        curl_easy_cleanup(c);
-        return false;
+    if (paStream_) {
+        pa_simple_free(paStream_);
+        paStream_ = nullptr;
     }
-
-    curl_ = c;
-    return true;
-}
-
-void DoubaoAsrProvider::wsSendFrame(uint8_t msgType, uint8_t flags,
-                                     const void *payload, uint32_t len) {
-    if (!curl_) return;
-    auto frame = buildFrame(msgType, flags, payload, len);
-    size_t sent = 0;
-    CURLcode res = curl_ws_send((CURL *)curl_, frame.data(), frame.size(),
-                                &sent, 0, CURLWS_RAW_MODE);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Vinput Doubao: ws send error: %s\n",
-                curl_easy_strerror(res));
-    }
-}
-
-bool DoubaoAsrProvider::wsRecvFrame(std::string &out) {
-    if (!curl_) return false;
-    char buf[16384];
-    size_t recv = 0;
-    const struct curl_ws_frame *meta = nullptr;
-    CURLcode res = curl_ws_recv((CURL *)curl_, buf, sizeof(buf), &recv, &meta);
-    if (res == CURLE_AGAIN) return false;
-    if (res != CURLE_OK) {
-        fprintf(stderr, "Vinput Doubao: ws recv error: %s\n",
-                curl_easy_strerror(res));
-        return false;
-    }
-    out.assign(buf, recv);
-    return true;
-}
-
-bool DoubaoAsrProvider::parseResponse(const std::string &raw,
-                                       std::string &text, bool &definite) {
-    definite = false;
-    // raw 是二进制帧: header(4) + sequence(4) + payload_size(4) + payload
-    if (raw.size() < 12) return false;
-    uint8_t msgType = (raw[1] >> 4) & 0x0F;
-    if (msgType == 0x0F) return false;  // error frame
-
-    uint32_t payloadSz;
-    memcpy(&payloadSz, &raw[8], 4);
-    payloadSz = ntohl(payloadSz);
-    if (raw.size() < 12 + payloadSz) return false;
-
-    std::string json(raw.begin() + 12, raw.begin() + 12 + payloadSz);
-    text = jsonGetString(json, "text");
-
-    // 在 utterances 数组里找 "definite": true
-    auto pos = json.find("\"utterances\"");
-    if (pos != std::string::npos) {
-        definite = json.find("\"definite\": true", pos) != std::string::npos ||
-                   json.find("\"definite\":true", pos) != std::string::npos;
-    }
-    return true;
 }
 
 void DoubaoAsrProvider::start() {
-    if (sendRunning_) return;
-
-    // 连接 WebSocket
-    if (!wsConnect()) {
-        if (onError_) onError_("Doubao: WS connection failed");
-        return;
-    }
-
-    // 发送 Full Client Request
-    std::string req = "{"
-        "\"audio\":{\"format\":\"pcm\",\"rate\":16000,\"bits\":16,\"channel\":1},"
-        "\"request\":{\"model_name\":\"bigmodel\",\"enable_itn\":true,"
-        "\"enable_punc\":true}}";
-    wsSendFrame(0x01, 0x00, req.data(), (uint32_t)req.size());
-
-    // 读握手响应
-    std::string resp;
-    wsRecvFrame(resp);  // 忽略握手响应
-
+    if (recording_) return;
     {
         std::lock_guard<std::mutex> lk(sampleMutex_);
         samples_.clear();
-        allSamples_.clear();
     }
-    sendRunning_ = true;
+    sessionWav_ = "/tmp/vinput_doubao_" + std::to_string(getpid()) + "_"
+                  + std::to_string(time(nullptr)) + ".wav";
+    sessionOnR_ = onResult_;
+    sessionOnE_ = onError_;
+    recording_ = true;
     if (onState_) onState_(true);
-
-    // 单线程 IO: 轮询发送音频 + 接收结果
-    std::thread([this]() {
-        std::string raw, text;
-        bool definite = false, finalSent = false;
-        int sentCount = 0, recvCount = 0, timeoutCount = 0;
-
-        while (!definite) {
-            // 1. 发送
-            if (sendRunning_) {
-                std::vector<int16_t> chunk;
-                {
-                    std::lock_guard<std::mutex> lk(sampleMutex_);
-                    if (samples_.size() >= 3200) {
-                        chunk.assign(samples_.begin(), samples_.begin() + 3200);
-                        samples_.erase(samples_.begin(), samples_.begin() + 3200);
-                    }
-                }
-                if (chunk.size() >= 3200) {
-                    wsSendFrame(0x02, 0x00, chunk.data(), (uint32_t)(chunk.size() * 2));
-                    sentCount++;
-                    if (sentCount % 5 == 1)
-                        fprintf(stderr, "Vinput Doubao: sent %d audio frames\n", sentCount);
-                }
-            } else if (!finalSent) {
-                // stop() 已调用 — 发最后一帧
-                wsSendFrame(0x02, 0x02, nullptr, 0);
-                finalSent = true;
-                fprintf(stderr, "Vinput Doubao: sent final frame (total=%d)\n", sentCount);
-            }
-
-            // 2. 接收
-            if (wsRecvFrame(raw)) {
-                recvCount++;
-                if (parseResponse(raw, text, definite)) {
-                    fprintf(stderr, "Vinput Doubao: recv #%d text=\"%s\" final=%d\n",
-                            recvCount, text.c_str(), definite);
-                    if (!text.empty() && onResult_) onResult_(text, definite);
-                    if (definite) break;
-                }
-            }
-
-            // 发完最后一帧后等 10 秒超时
-            if (finalSent && !definite) {
-                if (++timeoutCount > 200) {  // 10s timeout
-                    fprintf(stderr, "Vinput Doubao: timeout waiting for definite\n");
-                    break;
-                }
-            }
-
-            usleep(50000);  // 50ms 轮询
-        }
-
-        // 保存 WAV
-        {
-            std::lock_guard<std::mutex> lk(sampleMutex_);
-            writeWav(allSamples_, tempWavPath_);
-            fprintf(stderr, "Vinput Doubao: saved %zu samples to %s\n",
-                    allSamples_.size(), tempWavPath_.c_str());
-        }
-        if (onState_) onState_(false);
-    }).detach();
 }
 
 void DoubaoAsrProvider::stop() {
-    sendRunning_ = false;
+    if (!recording_) return;
+    if (onState_) onState_(false);
+    stopRequested_ = true;
+}
+
+void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
+                                           const std::string &wavPath,
+                                           AsrResultCallback onR,
+                                           AsrErrorCallback onE) {
+    if (!writeWav(samples, wavPath)) {
+        if (onE) onE("Doubao: failed to write WAV");
+        return;
+    }
+    fprintf(stderr, "Vinput Doubao: recorded %zu samples to %s\n",
+            samples.size(), wavPath.c_str());
+
+    auto apiKey = apiKey_;
+    auto resourceId = resourceId_;
+    if (apiKey.empty() || resourceId.empty()) {
+        if (onE) onE("Doubao: missing api_key or resource_id in ~/.config/vinput/doubao.json");
+        return;
+    }
+
+    std::thread([=]() {
+        std::ifstream wf(wavPath, std::ios::binary);
+        if (!wf) {
+            if (onE) onE("Doubao: failed to read WAV");
+            return;
+        }
+        std::vector<uint8_t> wavData((std::istreambuf_iterator<char>(wf)),
+                                      std::istreambuf_iterator<char>());
+        if (wavData.empty()) {
+            if (onE) onE("Doubao: empty WAV file");
+            return;
+        }
+        std::string b64 = base64Encode(wavData.data(), wavData.size());
+
+        std::string taskId = generateUuid();
+
+        // --- 提交任务 ---
+        {
+            CURL *curl = curl_easy_init();
+            if (!curl) {
+                if (onE) onE("Doubao: curl init failed");
+                return;
+            }
+            std::string respBody, respHdr;
+
+            std::string submitBody =
+                "{"
+                "\"audio\":{"
+                "\"format\":\"wav\","
+                "\"data\":\"" + b64 + "\""
+                "},"
+                "\"request\":{"
+                "\"model_name\":\"bigmodel\","
+                "\"enable_itn\":true,"
+                "\"enable_punc\":true"
+                "}"
+                "}";
+
+            struct curl_slist *headers = nullptr;
+            headers = curl_slist_append(headers, "Content-Type: application/json");
+            headers = curl_slist_append(headers,
+                ("X-Api-Key: " + apiKey).c_str());
+            headers = curl_slist_append(headers,
+                ("X-Api-Resource-Id: " + resourceId).c_str());
+            headers = curl_slist_append(headers,
+                ("X-Api-Request-Id: " + taskId).c_str());
+            headers = curl_slist_append(headers, "X-Api-Sequence: -1");
+
+            curl_easy_setopt(curl, CURLOPT_URL,
+                "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit");
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, submitBody.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respBody);
+            curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCb);
+            curl_easy_setopt(curl, CURLOPT_HEADERDATA, &respHdr);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+            CURLcode res = curl_easy_perform(curl);
+            long httpCode = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+
+            fprintf(stderr, "Vinput Doubao: submit HTTP %ld\n", httpCode);
+            if (res != CURLE_OK || httpCode != 200) {
+                fprintf(stderr, "Vinput Doubao: submit failed, body=%s\n", respBody.c_str());
+                if (onE) onE("Doubao: submit failed (HTTP " + std::to_string(httpCode) + ")");
+                return;
+            }
+
+            std::string statusCode = getHeader(respHdr, "x-api-status-code");
+            if (!statusCode.empty() && statusCode != "20000000") {
+                fprintf(stderr, "Vinput Doubao: submit rejected status=%s\n", statusCode.c_str());
+                if (onE) onE("Doubao: submit rejected (" + statusCode + ")");
+                return;
+            }
+        }
+
+        // --- 轮询结果 ---
+        constexpr int kMaxPoll = 75;  // 75 × 800ms = 60s
+        for (int pollCount = 1; pollCount <= kMaxPoll; pollCount++) {
+            usleep(800000);
+
+            CURL *curl = curl_easy_init();
+            if (!curl) {
+                if (onE) onE("Doubao: curl init failed");
+                return;
+            }
+            std::string respBody, respHdr;
+
+            struct curl_slist *headers = nullptr;
+            headers = curl_slist_append(headers, "Content-Type: application/json");
+            headers = curl_slist_append(headers,
+                ("X-Api-Key: " + apiKey).c_str());
+            headers = curl_slist_append(headers,
+                ("X-Api-Resource-Id: " + resourceId).c_str());
+            headers = curl_slist_append(headers,
+                ("X-Api-Request-Id: " + taskId).c_str());
+
+            curl_easy_setopt(curl, CURLOPT_URL,
+                "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query");
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "{}");
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respBody);
+            curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCb);
+            curl_easy_setopt(curl, CURLOPT_HEADERDATA, &respHdr);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+
+            CURLcode res = curl_easy_perform(curl);
+            long httpCode = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+
+            if (res != CURLE_OK || httpCode != 200) {
+                fprintf(stderr, "Vinput Doubao: query #%d HTTP %ld error, retry\n",
+                        pollCount, httpCode);
+                continue;
+            }
+
+            std::string statusCode = getHeader(respHdr, "x-api-status-code");
+
+            if (statusCode == "20000000") {
+                std::string text = jsonGetString(respBody, "text");
+                fprintf(stderr, "Vinput Doubao: result=\"%s\" (polled %d)\n",
+                        text.c_str(), pollCount);
+                if (onR) onR(text, true);
+                unlink(wavPath.c_str());
+                return;
+            }
+            if (statusCode == "20000003") {
+                fprintf(stderr, "Vinput Doubao: no speech detected\n");
+                if (onR) onR("", true);
+                unlink(wavPath.c_str());
+                return;
+            }
+            if (statusCode != "20000001" && statusCode != "20000002") {
+                fprintf(stderr, "Vinput Doubao: query status=%s body=%s\n",
+                        statusCode.c_str(), respBody.c_str());
+                if (onE) onE("Doubao: recognition failed (" + statusCode + ")");
+                return;
+            }
+            fprintf(stderr, "Vinput Doubao: query #%d processing...\n", pollCount);
+        }
+
+        fprintf(stderr, "Vinput Doubao: query timeout\n");
+        if (onE) onE("Doubao: query timeout (60s)");
+    }).detach();
 }
 
 std::unique_ptr<IAsrProvider> DoubaoAsrProviderFactory::create() {
     return std::make_unique<DoubaoAsrProvider>();
 }
+
+static struct CurlInit {
+    CurlInit() { curl_global_init(CURL_GLOBAL_ALL); }
+    ~CurlInit() { curl_global_cleanup(); }
+} _curlInit;
 
 static bool _doubaoReg = []() {
     AsrProviderRegistry::instance().registerFactory(

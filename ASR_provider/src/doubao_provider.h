@@ -1,10 +1,11 @@
 #pragma once
 
 #include <string>
-#include <atomic>
-#include <vector>
 #include <thread>
+#include <atomic>
 #include <mutex>
+#include <condition_variable>
+#include <vector>
 #include <cstdint>
 #include "asr_provider.h"
 
@@ -23,26 +24,26 @@ public:
 
 private:
     void keepAliveLoop();
-    bool wsConnect();
-    void wsSendFrame(uint8_t msgType, uint8_t flags, const void *payload, uint32_t len);
-    bool wsRecvFrame(std::string &out);
-    bool parseResponse(const std::string &json, std::string &text, bool &definite);
+    void processRecording(std::vector<int16_t> samples,
+                          const std::string &wavPath,
+                          AsrResultCallback onR, AsrErrorCallback onE);
 
     std::string apiKey_;
     std::string resourceId_;
-    std::string tempWavPath_;
 
-    // 常驻 PA 流
     pa_simple *paStream_ = nullptr;
     std::thread keepAliveThread_;
-    std::atomic<bool> keepAliveRunning_{true};
-    std::atomic<bool> sendRunning_{false};
+    std::atomic<bool> keepRunning_{true};
+
+    std::atomic<bool> recording_{false};
     std::mutex sampleMutex_;
     std::vector<int16_t> samples_;
-    std::vector<int16_t> allSamples_;
+    std::condition_variable stopCv_;
+    std::atomic<bool> stopRequested_{false};
 
-    // WebSocket (单线程轮询收发)
-    void *curl_ = nullptr;
+    std::string sessionWav_;
+    AsrResultCallback sessionOnR_;
+    AsrErrorCallback sessionOnE_;
 };
 
 class DoubaoAsrProviderFactory : public IAsrProviderFactory {

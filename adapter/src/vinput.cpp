@@ -61,30 +61,32 @@ public:
         initUinput();
 
         // self-pipe: 后台 ASR 线程安全唤醒主事件循环
-        if (pipe(wakePipe_) == 0) {
-            fcntl(wakePipe_[0], F_SETFL, O_NONBLOCK);
-            fcntl(wakePipe_[1], F_SETFL, O_NONBLOCK);
-            wakeWatcher_ = instance_->eventLoop().addIOEvent(
-                wakePipe_[0], fcitx::IOEventFlag::In,
-                [this](fcitx::EventSourceIO *, int fd, fcitx::IOEventFlags) -> bool {
-                    char buf[64];
-                    while (read(fd, buf, sizeof(buf)) > 0) {}
-                    std::vector<PendingCommit> batch;
-                    {
-                        std::lock_guard<std::mutex> lk(pendingMutex_);
-                        batch.swap(pendingCommits_);
-                    }
-                    for (auto &pc : batch) {
-                        auto *ic = instance_->inputContextManager().findByUUID(pc.uuid);
-                        if (!ic) continue;
-                        ic->inputPanel().setClientPreedit(fcitx::Text(pc.text));
-                        ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
-                        lastPreeditText_ = pc.text;
-                        FCITX_INFO() << "Vinput preedit: \"" << pc.text << "\"";
-                    }
-                    return true;
-                });
+        if (pipe(wakePipe_) != 0) {
+            FCITX_ERROR() << "Vinput: pipe() failed";
+            return;
         }
+        fcntl(wakePipe_[0], F_SETFL, O_NONBLOCK);
+        fcntl(wakePipe_[1], F_SETFL, O_NONBLOCK);
+        wakeWatcher_ = instance_->eventLoop().addIOEvent(
+            wakePipe_[0], fcitx::IOEventFlag::In,
+            [this](fcitx::EventSourceIO *, int fd, fcitx::IOEventFlags) -> bool {
+                char buf[64];
+                while (read(fd, buf, sizeof(buf)) > 0) {}
+                std::vector<PendingCommit> batch;
+                {
+                    std::lock_guard<std::mutex> lk(pendingMutex_);
+                    batch.swap(pendingCommits_);
+                }
+                for (auto &pc : batch) {
+                    auto *ic = instance_->inputContextManager().findByUUID(pc.uuid);
+                    if (!ic) continue;
+                    if (!pc.text.empty()) {
+                        ic->commitString(pc.text);
+                    }
+                    FCITX_INFO() << "Vinput commit: \"" << pc.text << "\"";
+                }
+                return true;
+            });
 
         // 在 PreInputMethod 阶段监听键盘事件 (早于输入法引擎)
         keyWatcher_ = instance_->watchEvent(
@@ -170,6 +172,7 @@ private:
     struct PendingCommit {
         fcitx::ICUUID uuid;
         std::string text;
+        bool isFinal = false;
     };
     std::mutex pendingMutex_;
     std::vector<PendingCommit> pendingCommits_;
@@ -380,14 +383,13 @@ private:
     }
 
     // ASR 识别结果回调 (可能在后台线程调用)
-    // Doubao 每次返回完整累积文本, 用 preedit 显示中间态, final 才 commit
     void onAsrResult(const std::string &text, bool isFinal) {
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex_);
-            pendingCommits_.emplace_back(currentUuid_, text);
+            pendingCommits_.emplace_back(PendingCommit{currentUuid_, text, isFinal});
         }
         char c = 1;
         write(wakePipe_[1], &c, 1);
