@@ -99,7 +99,8 @@ async def main():
                             utts = r["result"].get("utterances", [])
                             definite = utts and utts[-1].get("definite", False) if utts else False
                             if txt:
-                                print(json.dumps({"text": txt, "is_final": definite}), flush=True)
+                                print(json.dumps({"text": txt, "is_final": definite},
+                                                 ensure_ascii=False), flush=True)
                                 if definite:
                                     final = True
                     except asyncio.TimeoutError:
