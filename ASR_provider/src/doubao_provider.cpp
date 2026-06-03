@@ -227,8 +227,7 @@ void DoubaoAsrProvider::start() {
 
     // 发送 Full Client Request
     std::string req = "{"
-        "\"audio\":{\"format\":\"pcm\",\"rate\":16000,\"bits\":16,\"channel\":1,"
-        "\"language\":\"zh-CN\"},"
+        "\"audio\":{\"format\":\"pcm\",\"rate\":16000,\"bits\":16,\"channel\":1},"
         "\"request\":{\"model_name\":\"bigmodel\",\"enable_itn\":true,"
         "\"enable_punc\":true}}";
     wsSendFrame(0x01, 0x00, req.data(), (uint32_t)req.size());
