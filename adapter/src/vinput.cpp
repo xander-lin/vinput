@@ -77,16 +77,10 @@ public:
                     for (auto &pc : batch) {
                         auto *ic = instance_->inputContextManager().findByUUID(pc.uuid);
                         if (!ic) continue;
-                        if (pc.isFinal) {
-                            ic->inputPanel().reset();
-                            ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
-                            ic->commitString(pc.text);
-                        } else {
-                            ic->inputPanel().setClientPreedit(fcitx::Text(pc.text));
-                            ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
-                        }
-                        FCITX_INFO() << "Vinput: " << (pc.isFinal ? "commit" : "preedit")
-                                     << " \"" << pc.text << "\"";
+                        ic->inputPanel().setClientPreedit(fcitx::Text(pc.text));
+                        ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+                        lastPreeditText_ = pc.text;
+                        FCITX_INFO() << "Vinput preedit: \"" << pc.text << "\"";
                     }
                     return true;
                 });
@@ -176,7 +170,6 @@ private:
     struct PendingCommit {
         fcitx::ICUUID uuid;
         std::string text;
-        bool isFinal;
     };
     std::mutex pendingMutex_;
     std::vector<PendingCommit> pendingCommits_;
@@ -209,6 +202,7 @@ private:
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
     fcitx::ICUUID currentUuid_ = {};  // 用于 deactivate 后仍能查找 IC
+    std::string lastPreeditText_;       // deactivate 时 commit 用
     int providerIndex_ = 0;
 
     // 键盘事件回调
@@ -368,6 +362,18 @@ private:
         }
         currentIC_ = nullptr;
 
+        // commit 最后收到的 preedit 文本
+        if (!lastPreeditText_.empty()) {
+            auto *ic = instance_->inputContextManager().findByUUID(currentUuid_);
+            if (ic) {
+                ic->inputPanel().reset();
+                ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+                ic->commitString(lastPreeditText_);
+                FCITX_INFO() << "Vinput final commit: \"" << lastPreeditText_ << "\"";
+            }
+            lastPreeditText_.clear();
+        }
+
         playSound("deactivate");  // 结束音: 低音
         // 松键后还原 CapsLock (按下时硬件层已切换, 现在补一个假按键还原)
         revertCapsLock();
@@ -381,7 +387,7 @@ private:
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex_);
-            pendingCommits_.emplace_back(currentUuid_, text, isFinal);
+            pendingCommits_.emplace_back(currentUuid_, text);
         }
         char c = 1;
         write(wakePipe_[1], &c, 1);
