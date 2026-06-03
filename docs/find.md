@@ -1,5 +1,56 @@
 # Vinput 开发发现记录
 
+## 2026-06-03
+
+### Zipformer 调试
+
+#### sherpa-onnx 输出流
+- sherpa-onnx 将文本结果和 JSON 输出到 **stderr**，而非 stdout
+- stdout 只有 "Start to create recognizer" 和 "Recognizer created in X s"
+- 用 `popen("r")` 只能读 stdout，需改为 fork + pipe 分开捕获 stdout/stderr
+- **选项格式**: sherpa-onnx 要求 `--encoder=value`（带`=`），用 `execl` 时必须拼接为单个 argv 字符串，不能用空格分隔的独立参数
+
+#### 录音竞争条件
+- `stop()` 中用 `std::thread(...).detach()` 启动子进程识别
+- 析构函数中 `unlink(tempWavPath_)` 删除 WAV，与 detached 线程存在 **TOCTOU 竞争**
+- 修复: `unlink(wav)` 移到 detached 线程中 `pclose` 之后执行，析构函数不删文件
+- 线程安全: lambda 按值捕获 `modelDir_`，不持有 `this` 指针
+
+#### 退出码 65280
+- 65280 = 0xFF00 = `WEXITSTATUS(255)` × 256
+- `pclose` 返回 raw wait status，需用 `WIFEXITED/WEXITSTATUS` 提取退出码
+- exit code 255 常见原因: shell 找不到命令 / 文件不存在 / 参数格式错误
+
+#### JSON 解析
+- `rfind("\"text\"")` 定位到 `"text":` key 后，需跳过 9 个字符（不是 8 个）
+  - `"text"` = 6, `": "` = 2, 值开头的 `"` = 1, 共 9
+- `pos += 8` 正好落在值开头的引号上，`find('"', pos)` 找到同一字符，substr 结果为空
+
+#### 响度归一化
+- 简单峰值归一化不如 EBU R128 标准（K-weighting + gating）
+- 使用 **libebur128** (`pkg-config: libebur128`)，依赖加入 `adapter/src/meson.build`
+- ebur128 API: `ebur128_init(ch, sr, EBUR128_MODE_I)` → `ebur128_add_frames_short()` → `ebur128_loudness_global()` → `ebur128_destroy()`
+- 归一化目标: **-16 LUFS**（语音播客标准响度，比广播 -23 LUFS 更适合 ASR）
+- **边界处理**: `loudness < -70` 或 `-inf` 时 skip 归一化（gain=1.0）
+- gain 裁剪: 0.05x ~ 20x，防止极端情况
+
+#### 录音流程改进
+- 改为先收集全部 PCM 到 `std::vector<int16_t>`，归一化后再写 WAV，便于内存中处理
+- 添加 `max_abs` 调试日志，方便排查录音是否静音
+- `pa_simple_read` 阻塞直到 `bytes` 字节就绪：`sizeof(buf)=4096` 在 16kHz S16LE 下 ≈128ms/iter
+
+#### 音量对识别的影响（sherpa-onnx zipformer）
+- 用测试音频 (10s) 降幅测试:
+  - 100% → 完整识别全文
+  - 10% → 部分缺漏
+  - 1% → 几乎全丢 (只识别尾部少数词)
+- `normalize_samples=True` 有内部归一化，但极端小振幅 + 量化噪声时无效
+
+### 构建依赖
+- libebur128: Arch `extra/libebur128`, 头文件 `<ebur128.h>`, meson `dependency('libebur128')`
+- parecord 测试麦克风: `parecord --rate=16000 --format=s16le --channels=1 /tmp/test.wav`
+- `pactl list short sources` 查看可用录音源
+
 ## 2026-06-02
 
 ### 构建系统
