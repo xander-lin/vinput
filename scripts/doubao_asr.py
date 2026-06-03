@@ -80,51 +80,51 @@ async def main():
 
     loop = asyncio.get_running_loop()
 
-    async with websockets.connect(WS_URL, extra_headers=headers, ping_interval=None) as ws:
-        # 1. Full Client Request
-        await ws.send(build_full_request())
-        _ = await ws.recv()  # 握手响应, 忽略
+    try:
+        async with websockets.connect(WS_URL, extra_headers=headers, ping_interval=None,
+                                      open_timeout=10) as ws:
+            # 1. Full Client Request
+            await ws.send(build_full_request())
+            _ = await ws.recv()  # 握手响应, 忽略
 
-        # 2. 边读 stdin 边发送
-        async def recv_results():
-            """后台收结果"""
-            final = False
-            while not final:
-                try:
-                    data = await asyncio.wait_for(ws.recv(), timeout=0.5)
-                    r = parse_response(data)
-                    if r and "result" in r:
-                        txt = r["result"].get("text", "")
-                        utts = r["result"].get("utterances", [])
-                        definite = utts and utts[-1].get("definite", False) if utts else False
-                        if txt:
-                            print(json.dumps({"text": txt, "is_final": definite}), flush=True)
-                            if definite:
-                                final = True
-                except asyncio.TimeoutError:
-                    pass
-                except websockets.ConnectionClosed:
+            # 2. 边读 stdin 边发送
+            async def recv_results():
+                final = False
+                while not final:
+                    try:
+                        data = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                        r = parse_response(data)
+                        if r and "result" in r:
+                            txt = r["result"].get("text", "")
+                            utts = r["result"].get("utterances", [])
+                            definite = utts and utts[-1].get("definite", False) if utts else False
+                            if txt:
+                                print(json.dumps({"text": txt, "is_final": definite}), flush=True)
+                                if definite:
+                                    final = True
+                    except asyncio.TimeoutError:
+                        pass
+                    except websockets.ConnectionClosed:
+                        break
+
+            recv_task = asyncio.create_task(recv_results())
+
+            # 3. 读 stdin 分块发送
+            while True:
+                data = await loop.run_in_executor(None, sys.stdin.buffer.read, CHUNK_BYTES)
+                if not data or len(data) < CHUNK_BYTES:
+                    if data:
+                        await ws.send(build_audio_frame(data, is_last=True))
+                    else:
+                        await ws.send(build_audio_frame(b"", is_last=True))
                     break
+                await ws.send(build_audio_frame(data))
 
-        recv_task = asyncio.create_task(recv_results())
+            # 4. 等最终结果
+            await recv_task
 
-        # 3. 读 stdin 分块发送
-        first = True
-        while True:
-            data = await loop.run_in_executor(None, sys.stdin.buffer.read, CHUNK_BYTES)
-            if not data or len(data) < CHUNK_BYTES:
-                # 最后一包 (可能不足 200ms)
-                if data:
-                    await ws.send(build_audio_frame(data, is_last=True))
-                else:
-                    # 发送空最后一包通知服务端结束
-                    await ws.send(build_audio_frame(b"", is_last=True))
-                break
-            await ws.send(build_audio_frame(data))
-            first = False
-
-        # 4. 等最终结果
-        await recv_task
+    except Exception as e:
+        print(json.dumps({"error": f"Connection failure: {e}"}), flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
