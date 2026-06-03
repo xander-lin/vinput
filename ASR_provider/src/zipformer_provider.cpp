@@ -52,16 +52,16 @@ void ZipformerAsrProvider::stop() {
     auto wav = tempWavPath_;
     auto onR = onResult_;
     auto onE = onError_;
-    auto dir = expandPath(modelDir_);
-    std::thread([wav, onR, onE, dir]() {
-        // 构建命令
-        auto cmd = "~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx"
-                   " --encoder=" + dir + "/encoder-epoch-99-avg-1.onnx"
-                   " --decoder=" + dir + "/decoder-epoch-99-avg-1.onnx"
-                   " --joiner=" + dir + "/joiner-epoch-99-avg-1.onnx"
-                   " --tokens=" + dir + "/tokens.txt"
-                   " --provider=cpu --num-threads=4"
-                   " " + wav + " 2>/dev/null";
+    std::thread([wav, onR, onE, this]() {
+        auto dir = expandPath(modelDir_);
+        auto sherpaBin = expandPath("~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx");
+        auto cmd = sherpaBin
+                   + " --encoder=" + dir + "/encoder-epoch-99-avg-1.onnx"
+                   + " --decoder=" + dir + "/decoder-epoch-99-avg-1.onnx"
+                   + " --joiner=" + dir + "/joiner-epoch-99-avg-1.onnx"
+                   + " --tokens=" + dir + "/tokens.txt"
+                   + " --provider=cpu --num-threads=4"
+                   + " " + wav + " 2>/dev/null";
 
         fprintf(stderr, "Vinput: running sherpa-onnx subprocess...\n");
         auto *pipe = popen(cmd.c_str(), "r");
