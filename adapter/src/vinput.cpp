@@ -171,18 +171,23 @@ private:
     // 运行时依赖: notifications addon (仅用于切换显示)
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
 
-    // 提示音: 用系统命令播放 WAV (避免 PA 多线程竞争)
+    // 提示音: 用系统命令播放 WAV
     static void playSound(const std::string &name) {
         auto path = expandPath("~/.local/share/vinput/sounds/" + name + ".wav");
         if (access(path.c_str(), R_OK) != 0) return;
+
+        // paplay 需要 PULSE_RUNTIME_PATH 环境变量
+        const char *pulsePath = getenv("PULSE_RUNTIME_PATH");
+        const char *xdgRuntime = getenv("XDG_RUNTIME_DIR");
+        std::string paEnv;
+        if (pulsePath) paEnv = std::string("PULSE_RUNTIME_PATH=") + pulsePath;
+        else if (xdgRuntime) paEnv = std::string("PULSE_RUNTIME_PATH=") + xdgRuntime + "/pulse";
+
+        const char *envp[2] = {paEnv.empty() ? nullptr : paEnv.c_str(), nullptr};
         pid_t pid;
         const char *argv[] = {"paplay", path.c_str(), nullptr};
-        posix_spawn_file_actions_t fa;
-        posix_spawn_file_actions_init(&fa);
-        posix_spawn_file_actions_addclose(&fa, STDERR_FILENO);  // 静默 PA 错误
-        posix_spawn(&pid, "/usr/bin/paplay", &fa, nullptr,
-                    (char *const *)argv, nullptr);
-        posix_spawn_file_actions_destroy(&fa);
+        posix_spawn(&pid, "/usr/bin/paplay", nullptr, nullptr,
+                    (char *const *)argv, envp[0] ? (char *const *)envp : nullptr);
     }
 
     // 状态
