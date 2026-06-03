@@ -177,9 +177,12 @@ private:
         if (access(path.c_str(), R_OK) != 0) return;
         pid_t pid;
         const char *argv[] = {"paplay", path.c_str(), nullptr};
-        if (posix_spawn(&pid, "/usr/bin/paplay", nullptr, nullptr,
-                        (char *const *)argv, nullptr) != 0) return;
-        // 不 wait: 让子进程自行结束, 僵尸由 fcitx5 主进程 SIGCHLD 处理
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_addclose(&fa, STDERR_FILENO);  // 静默 PA 错误
+        posix_spawn(&pid, "/usr/bin/paplay", &fa, nullptr,
+                    (char *const *)argv, nullptr);
+        posix_spawn_file_actions_destroy(&fa);
     }
 
     // 状态

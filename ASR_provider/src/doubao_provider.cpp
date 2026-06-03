@@ -48,8 +48,11 @@ DoubaoAsrProvider::DoubaoAsrProvider() {
         uint8_t buf[6400];  // 200ms chunks
         int err = 0;
         while (keepAliveRunning_) {
-            if (pa_simple_read(paStream_, buf, sizeof(buf), &err) < 0)
+            if (pa_simple_read(paStream_, buf, sizeof(buf), &err) < 0) {
+                fprintf(stderr, "Vinput Doubao: keep-alive read error: %s\n",
+                        pa_strerror(err));
                 break;
+            }
             if (sendRunning_) {
                 std::lock_guard<std::mutex> lk(sendMutex_);
                 if (sendFd_ >= 0)
