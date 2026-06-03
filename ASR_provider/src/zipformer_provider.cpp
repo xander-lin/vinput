@@ -199,10 +199,6 @@ void ZipformerAsrProvider::recordThread() {
     fprintf(stderr, "Vinput: measured loudness %.1f LUFS, gain=%.2f\n",
             loudness, gain);
 
-    // 防止极端值
-    if (gain > 20.0) gain = 20.0;
-    if (gain < 0.05) gain = 0.05;
-
     for (auto &s : samples) {
         int32_t v = static_cast<int32_t>(s) * gain;
         if (v > 32767) v = 32767;
