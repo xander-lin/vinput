@@ -190,7 +190,8 @@ private:
     std::unique_ptr<fcitx::EventSourceTime> timer_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     fcitx::InputContext *currentIC_ = nullptr;
-    int providerIndex_ = 0; // 当前使用的 ASR 后端在列表中的索引
+    int providerIndex_ = 0;
+    size_t lastCommittedSize_ = 0; // Doubao 增量追踪
 
     // 键盘事件回调
     void onKeyEvent(fcitx::KeyEvent &keyEvent) {
@@ -357,14 +358,24 @@ private:
     void onAsrResult(const std::string &text, bool isFinal) {
         FCITX_INFO() << "Vinput ASR result: " << text
                      << " (final=" << isFinal << ")";
-        if (!isFinal || !currentIC_) return;
+        if (!currentIC_) return;
+
+        // Doubao 每次返回完整文本, 只 commit 新增部分
+        std::string diff;
+        if (text.size() > lastCommittedSize_) {
+            diff = text.substr(lastCommittedSize_);
+            lastCommittedSize_ = text.size();
+        }
+        if (isFinal) lastCommittedSize_ = 0;  // 复位
+
+        if (diff.empty()) return;
 
         {
             std::lock_guard<std::mutex> lk(pendingMutex_);
-            pendingCommits_.emplace_back(currentIC_->uuid(), text);
+            pendingCommits_.emplace_back(currentIC_->uuid(), diff);
         }
         char c = 1;
-        write(wakePipe_[1], &c, 1);  // 唤醒主线程 epoll
+        write(wakePipe_[1], &c, 1);
     }
 
     // ASR 错误回调
