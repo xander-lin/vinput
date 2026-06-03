@@ -1,4 +1,4 @@
-#include "sense_voice_provider.h"
+#include "zipformer_provider.h"
 
 #include <sherpa-onnx/c-api/cxx-api.h>
 #include <pulse/simple.h>
@@ -7,63 +7,54 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
-#include <fstream>
 #include <vector>
 
 namespace vinput {
 
-static std::string expandPath(const std::string &path) {
-    if (!path.empty() && path[0] == '~') {
-        const char *home = getenv("HOME");
-        if (home) return std::string(home) + path.substr(1);
+static std::string expandPath(const std::string &p) {
+    if (!p.empty() && p[0] == '~') {
+        const char *h = getenv("HOME");
+        if (h) return std::string(h) + p.substr(1);
     }
-    return path;
+    return p;
 }
 
-SenseVoiceAsrProvider::SenseVoiceAsrProvider()
-    : modelPath_("~/.local/share/vinput/models/sense-voice/model.onnx"),
-      tokensPath_("~/.local/share/vinput/models/sense-voice/tokens.txt") {
-    tempWavPath_ = "/tmp/vinput_sense_" + std::to_string(getpid()) + ".wav";
+ZipformerAsrProvider::ZipformerAsrProvider()
+    : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {
+    tempWavPath_ = "/tmp/vinput_zip_" + std::to_string(getpid()) + ".wav";
 }
 
-SenseVoiceAsrProvider::~SenseVoiceAsrProvider() {
+ZipformerAsrProvider::~ZipformerAsrProvider() {
     recording_ = false;
     if (recordThread_.joinable()) recordThread_.join();
     if (recogThread_.joinable()) recogThread_.detach();
-    delete static_cast<sherpa_onnx::cxx::OfflineRecognizer *>(recognizer_);
+    delete static_cast<sherpa_onnx::cxx::OnlineRecognizer *>(recognizer_);
     unlink(tempWavPath_.c_str());
 }
 
-void SenseVoiceAsrProvider::setConfig(const std::string &key,
-                                       const std::string &value) {
-    if (key == "model") modelPath_ = value;
-    else if (key == "tokens") tokensPath_ = value;
+void ZipformerAsrProvider::setConfig(const std::string &key,
+                                      const std::string &value) {
+    if (key == "model_dir") modelDir_ = value;
 }
 
-void SenseVoiceAsrProvider::start() {
+void ZipformerAsrProvider::start() {
     if (recording_) return;
 
     if (!recognizer_) {
-        auto model = expandPath(modelPath_);
-        auto tokens = expandPath(tokensPath_);
+        auto dir = expandPath(modelDir_);
 
-        std::ifstream test(tokens);
-        if (!test.good()) {
-            fprintf(stderr, "Vinput: SenseVoice tokens not found: %s\n",
-                    tokens.c_str());
-            return;
-        }
-
-        sherpa_onnx::cxx::OfflineRecognizerConfig config;
-        config.model_config.sense_voice.model = model;
-        config.model_config.tokens = tokens;
+        sherpa_onnx::cxx::OnlineRecognizerConfig config;
+        config.model_config.transducer.encoder = dir + "/encoder-epoch-99-avg-1.onnx";
+        config.model_config.transducer.decoder = dir + "/decoder-epoch-99-avg-1.onnx";
+        config.model_config.transducer.joiner = dir + "/joiner-epoch-99-avg-1.onnx";
+        config.model_config.tokens = dir + "/tokens.txt";
         config.model_config.num_threads = 4;
         config.model_config.provider = "cpu";
 
-        auto *rec = new sherpa_onnx::cxx::OfflineRecognizer(
-            sherpa_onnx::cxx::OfflineRecognizer::Create(config));
+        auto *rec = new sherpa_onnx::cxx::OnlineRecognizer(
+            sherpa_onnx::cxx::OnlineRecognizer::Create(config));
         recognizer_ = rec;
-        fprintf(stderr, "Vinput: SenseVoice model loaded\n");
+        fprintf(stderr, "Vinput: Zipformer model loaded\n");
     }
 
     recording_ = true;
@@ -71,7 +62,7 @@ void SenseVoiceAsrProvider::start() {
     recordThread_ = std::thread([this]() { recordThread(); });
 }
 
-void SenseVoiceAsrProvider::stop() {
+void ZipformerAsrProvider::stop() {
     if (!recording_) return;
     recording_ = false;
     if (recordThread_.joinable()) recordThread_.join();
@@ -87,19 +78,19 @@ void SenseVoiceAsrProvider::stop() {
     });
 }
 
-void SenseVoiceAsrProvider::recognizeThread(std::string wavPath,
-                                             void *recognizer,
-                                             AsrResultCallback onR,
-                                             AsrErrorCallback onE) {
-    auto *rec = static_cast<sherpa_onnx::cxx::OfflineRecognizer *>(recognizer);
-    if (!rec) { if (onE) onE("SenseVoice: no recognizer"); return; }
+void ZipformerAsrProvider::recognizeThread(std::string wavPath,
+                                            void *recognizer,
+                                            AsrResultCallback onR,
+                                            AsrErrorCallback onE) {
+    auto *rec = static_cast<sherpa_onnx::cxx::OnlineRecognizer *>(recognizer);
+    if (!rec) { if (onE) onE("Zipformer: no recognizer"); return; }
 
     FILE *f = fopen(wavPath.c_str(), "rb");
-    if (!f) { if (onE) onE("SenseVoice: no audio"); return; }
+    if (!f) { if (onE) onE("Zipformer: no audio"); return; }
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     rewind(f);
-    if (size <= 44) { fclose(f); if (onE) onE("SenseVoice: empty"); return; }
+    if (size <= 44) { fclose(f); if (onE) onE("Zipformer: empty"); return; }
 
     fseek(f, 44, SEEK_SET);
     int numSamples = (size - 44) / 2;
@@ -110,17 +101,22 @@ void SenseVoiceAsrProvider::recognizeThread(std::string wavPath,
     for (int i = 0; i < numSamples; i++)
         samples[i] = raw[i] / 32768.0f;
 
+    // Simulate streaming: feed all frames at once, decode, get result
     auto stream = rec->CreateStream();
     stream.AcceptWaveform(16000, samples.data(), numSamples);
-    rec->Decode(&stream);
-    auto result = rec->GetResult(&stream);
+    stream.InputFinished();
 
-    fprintf(stderr, "Vinput: SenseVoice text = %s\n", result.text.c_str());
-    if (onR && !result.text.empty()) onR(result.text, true);
-    else if (onE) onE("SenseVoice: empty result");
+    std::string text;
+    while (rec->IsReady(&stream)) rec->Decode(&stream);
+    auto result = rec->GetResult(&stream);
+    text = result.text;
+
+    fprintf(stderr, "Vinput: Zipformer text = %s\n", text.c_str());
+    if (onR && !text.empty()) onR(text, true);
+    else if (onE) onE("Zipformer: empty result");
 }
 
-void SenseVoiceAsrProvider::recordThread() {
+void ZipformerAsrProvider::recordThread() {
     pa_sample_spec ss;
     ss.format = PA_SAMPLE_S16LE;
     ss.rate = 16000;
@@ -164,16 +160,16 @@ void SenseVoiceAsrProvider::recordThread() {
 
     fclose(f);
     pa_simple_free(pa);
-    fprintf(stderr, "Vinput: SenseVoice recorded %ld bytes\n", dataSize);
+    fprintf(stderr, "Vinput: Zipformer recorded %ld bytes\n", dataSize);
 }
 
-std::unique_ptr<IAsrProvider> SenseVoiceAsrProviderFactory::create() {
-    return std::make_unique<SenseVoiceAsrProvider>();
+std::unique_ptr<IAsrProvider> ZipformerAsrProviderFactory::create() {
+    return std::make_unique<ZipformerAsrProvider>();
 }
 
-static bool _senseReg = []() {
+static bool _zipReg = []() {
     AsrProviderRegistry::instance().registerFactory(
-        std::make_unique<SenseVoiceAsrProviderFactory>());
+        std::make_unique<ZipformerAsrProviderFactory>());
     return true;
 }();
 

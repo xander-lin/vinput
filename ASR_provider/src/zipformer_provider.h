@@ -3,15 +3,14 @@
 #include <string>
 #include <thread>
 #include <atomic>
-#include <memory>
 #include "asr_provider.h"
 
 namespace vinput {
 
-class SenseVoiceAsrProvider : public IAsrProvider {
+class ZipformerAsrProvider : public IAsrProvider {
 public:
-    SenseVoiceAsrProvider();
-    ~SenseVoiceAsrProvider() override;
+    ZipformerAsrProvider();
+    ~ZipformerAsrProvider() override;
 
     void start() override;
     void stop() override;
@@ -22,19 +21,18 @@ private:
     static void recognizeThread(std::string wavPath, void *recognizer,
                                 AsrResultCallback onR, AsrErrorCallback onE);
 
-    void *recognizer_ = nullptr;  // sherpa_onnx::OfflineRecognizer*
-    std::string modelPath_;
-    std::string tokensPath_;
+    void *recognizer_ = nullptr;
+    std::string modelDir_;
     std::string tempWavPath_;
     std::thread recordThread_;
     std::thread recogThread_;
     std::atomic<bool> recording_{false};
 };
 
-class SenseVoiceAsrProviderFactory : public IAsrProviderFactory {
+class ZipformerAsrProviderFactory : public IAsrProviderFactory {
 public:
-    std::string id() const override { return "sense-voice"; }
-    std::string name() const override { return "SenseVoice (sherpa-onnx)"; }
+    std::string id() const override { return "zipformer"; }
+    std::string name() const override { return "Zipformer (sherpa-onnx)"; }
     std::unique_ptr<IAsrProvider> create() override;
 };
 

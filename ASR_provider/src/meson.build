@@ -7,8 +7,8 @@ asr_provider_lib = static_library('asr_provider',
   'mock_provider.cpp',
   'qwen3_provider.h',
   'qwen3_provider.cpp',
-  'sense_voice_provider.h',
-  'sense_voice_provider.cpp',
+  'zipformer_provider.h',
+  'zipformer_provider.cpp',
   include_directories: include_directories(sherpa_dir / 'include'),
   install: false)
 
