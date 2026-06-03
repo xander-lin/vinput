@@ -1,2 +1,0 @@
-option('sherpa_onnx_dir', type: 'string', value: '',
-       description: 'Path to sherpa-onnx installation directory')

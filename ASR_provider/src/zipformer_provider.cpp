@@ -1,12 +1,12 @@
 #include "zipformer_provider.h"
 
-#include <sherpa-onnx/c-api/cxx-api.h>
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <unistd.h>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace vinput {
@@ -22,30 +22,11 @@ static std::string expandPath(const std::string &p) {
 ZipformerAsrProvider::ZipformerAsrProvider()
     : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {
     tempWavPath_ = "/tmp/vinput_zip_" + std::to_string(getpid()) + ".wav";
-
-    // 后台线程预加载模型，避免阻塞 fcitx5 事件循环导致 SIGSEGV
-    auto dir = expandPath(modelDir_);
-    loadThread_ = std::thread([this, dir]() {
-        sherpa_onnx::cxx::OnlineRecognizerConfig config;
-        config.model_config.transducer.encoder = dir + "/encoder-epoch-99-avg-1.onnx";
-        config.model_config.transducer.decoder = dir + "/decoder-epoch-99-avg-1.onnx";
-        config.model_config.transducer.joiner = dir + "/joiner-epoch-99-avg-1.onnx";
-        config.model_config.tokens = dir + "/tokens.txt";
-        config.model_config.num_threads = 4;
-        config.model_config.provider = "cpu";
-
-        recognizer_ = new sherpa_onnx::cxx::OnlineRecognizer(
-            sherpa_onnx::cxx::OnlineRecognizer::Create(config));
-        loaded_ = true;
-        fprintf(stderr, "Vinput: Zipformer model loaded\n");
-    });
 }
 
 ZipformerAsrProvider::~ZipformerAsrProvider() {
     recording_ = false;
     if (recordThread_.joinable()) recordThread_.join();
-    if (recogThread_.joinable()) recogThread_.detach();
-    // recognizer_ is static, don't delete
     unlink(tempWavPath_.c_str());
 }
 
@@ -56,17 +37,6 @@ void ZipformerAsrProvider::setConfig(const std::string &key,
 
 void ZipformerAsrProvider::start() {
     if (recording_) return;
-
-    // 等待模型加载完成
-    if (!loaded_) {
-        fprintf(stderr, "Vinput: waiting for Zipformer model to load...\n");
-        if (loadThread_.joinable()) loadThread_.join();
-    }
-    if (!recognizer_) {
-        fprintf(stderr, "Vinput: Zipformer model failed to load\n");
-        return;
-    }
-
     recording_ = true;
     if (onState_) onState_(true);
     recordThread_ = std::thread([this]() { recordThread(); });
@@ -78,52 +48,71 @@ void ZipformerAsrProvider::stop() {
     if (recordThread_.joinable()) recordThread_.join();
     if (onState_) onState_(false);
 
-    if (recogThread_.joinable()) recogThread_.join();
+    // 后台子进程识别
     auto wav = tempWavPath_;
-    auto rec = recognizer_;
     auto onR = onResult_;
     auto onE = onError_;
-    recogThread_ = std::thread([wav, rec, onR, onE]() {
-        recognizeThread(wav, rec, onR, onE);
-    });
-}
+    auto dir = expandPath(modelDir_);
+    std::thread([wav, onR, onE, dir]() {
+        // 构建命令
+        auto cmd = "~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx"
+                   " --encoder=" + dir + "/encoder-epoch-99-avg-1.onnx"
+                   " --decoder=" + dir + "/decoder-epoch-99-avg-1.onnx"
+                   " --joiner=" + dir + "/joiner-epoch-99-avg-1.onnx"
+                   " --tokens=" + dir + "/tokens.txt"
+                   " --provider=cpu --num-threads=4"
+                   " " + wav + " 2>/dev/null";
 
-void ZipformerAsrProvider::recognizeThread(std::string wavPath,
-                                            void *recognizer,
-                                            AsrResultCallback onR,
-                                            AsrErrorCallback onE) {
-    auto *rec = static_cast<sherpa_onnx::cxx::OnlineRecognizer *>(recognizer);
-    if (!rec) { if (onE) onE("Zipformer: no recognizer"); return; }
+        fprintf(stderr, "Vinput: running sherpa-onnx subprocess...\n");
+        auto *pipe = popen(cmd.c_str(), "r");
+        if (!pipe) { if (onE) onE("Zipformer: popen failed"); return; }
 
-    FILE *f = fopen(wavPath.c_str(), "rb");
-    if (!f) { if (onE) onE("Zipformer: no audio"); return; }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    rewind(f);
-    if (size <= 44) { fclose(f); if (onE) onE("Zipformer: empty"); return; }
+        std::string output;
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), pipe)) output += buf;
+        int rc = pclose(pipe);
 
-    fseek(f, 44, SEEK_SET);
-    int numSamples = (size - 44) / 2;
-    std::vector<float> samples(numSamples);
-    std::vector<int16_t> raw(numSamples);
-    fread(raw.data(), 2, numSamples, f);
-    fclose(f);
-    for (int i = 0; i < numSamples; i++)
-        samples[i] = raw[i] / 32768.0f;
+        if (rc != 0) {
+            fprintf(stderr, "Vinput: sherpa-onnx exited %d\n", rc);
+            if (onE) onE("Zipformer: recognition failed");
+            return;
+        }
 
-    // Simulate streaming: feed all frames at once, decode, get result
-    auto stream = rec->CreateStream();
-    stream.AcceptWaveform(16000, samples.data(), numSamples);
-    stream.InputFinished();
+        // 解析文本: 从 JSON 取 "text" 字段
+        auto pos = output.rfind("\"text\"");
+        if (pos == std::string::npos) {
+            // 尝试取最后一行非 JSON 的文本
+            pos = output.find_last_of('\n', output.size() - 2);
+            std::string text;
+            if (pos != std::string::npos) {
+                text = output.substr(0, pos);
+                pos = text.find_last_of('\n');
+                if (pos != std::string::npos) text = text.substr(pos + 1);
+            }
+            text = output;
+            // 去掉首尾空白
+            while (!text.empty() && (text.back() == '\n' || text.back() == '\r'))
+                text.pop_back();
+            while (!text.empty() && (text[0] == '\n' || text[0] == ' '))
+                text.erase(0, 1);
 
-    std::string text;
-    while (rec->IsReady(&stream)) rec->Decode(&stream);
-    auto result = rec->GetResult(&stream);
-    text = result.text;
+            if (!text.empty()) {
+                fprintf(stderr, "Vinput: text = %s\n", text.c_str());
+                if (onR) onR(text, true);
+            } else {
+                if (onE) onE("Zipformer: empty output");
+            }
+            return;
+        }
 
-    fprintf(stderr, "Vinput: Zipformer text = %s\n", text.c_str());
-    if (onR && !text.empty()) onR(text, true);
-    else if (onE) onE("Zipformer: empty result");
+        pos += 8; // skip "text": "
+        auto end = output.find('"', pos);
+        std::string text = output.substr(pos, end - pos);
+
+        fprintf(stderr, "Vinput: text = %s\n", text.c_str());
+        if (onR && !text.empty()) onR(text, true);
+        else if (onE) onE("Zipformer: empty result");
+    }).detach();
 }
 
 void ZipformerAsrProvider::recordThread() {

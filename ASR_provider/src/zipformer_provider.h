@@ -18,16 +18,11 @@ public:
 
 private:
     void recordThread();
-    static void recognizeThread(std::string wavPath, void *recognizer,
-                                AsrResultCallback onR, AsrErrorCallback onE);
+    void transcribe();   // 子进程调用 sherpa-onnx
 
-    void *recognizer_ = nullptr;
-    std::atomic<bool> loaded_{false};
     std::string modelDir_;
     std::string tempWavPath_;
     std::thread recordThread_;
-    std::thread recogThread_;
-    std::thread loadThread_;
     std::atomic<bool> recording_{false};
 };
 
