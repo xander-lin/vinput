@@ -30,6 +30,7 @@
 // Vinput ASR provider 接口
 #include "asr_provider.h"
 #include "mock_provider.h"         // 确保 Mock 后端被链接并自动注册
+#include "doubao_provider.h"      // 确保豆包后端被链接并自动注册
 
 // notifications addon 公共 API (跨 addon 调用, 仅用于显示切换信息)
 #include <fcitx-module/notifications/notifications_public.h>

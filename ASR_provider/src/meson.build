@@ -5,6 +5,8 @@ asr_provider_lib = static_library('asr_provider',
   'mock_provider.cpp',
   'zipformer_provider.h',
   'zipformer_provider.cpp',
+  'doubao_provider.h',
+  'doubao_provider.cpp',
   install: false)
 
 asr_provider_dep = declare_dependency(
