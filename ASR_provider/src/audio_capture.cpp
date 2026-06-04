@@ -224,18 +224,26 @@ double AudioCapture::normalizeSamples(std::vector<int16_t> &samples) {
 }
 
 bool AudioCapture::detectBlank(const std::vector<int16_t> &samples, double eburLoudness) {
-    if (eburLoudness < -60.0) {
-        fprintf(stderr, "Vinput Capture: blank detected by loudness (%.1f LUFS)\n", eburLoudness);
+    double sumSq = 0;
+    int16_t peak = 0;
+    for (auto s : samples) {
+        sumSq += (double)s * (double)s;
+        int16_t a = s >= 0 ? s : (int16_t)-s;
+        if (a > peak) peak = a;
+    }
+
+    if (peak < 100) {
+        fprintf(stderr, "Vinput Capture: blank detected (peak=%d, truly silent)\n", (int)peak);
         return true;
     }
 
-    double sumSq = 0;
-    for (auto s : samples) sumSq += (double)s * (double)s;
     double rms = std::sqrt(sumSq / samples.size());
+    double crestFactor = (double)peak / rms;
 
-    constexpr double kBlankRmsThreshold = 80.0;
-    if (rms < kBlankRmsThreshold) {
-        fprintf(stderr, "Vinput Capture: blank detected by RMS (%.1f)\n", rms);
+    constexpr double kCrestThreshold = 8.0;
+    if (crestFactor < kCrestThreshold) {
+        fprintf(stderr, "Vinput Capture: blank detected by crest factor (%.1f, peak=%d rms=%.0f)\n",
+                crestFactor, (int)peak, rms);
         return true;
     }
 
