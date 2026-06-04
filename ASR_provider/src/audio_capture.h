@@ -31,12 +31,14 @@ public:
 
     void setDenoiseEnabled(bool enabled) { denoiseEnabled_ = enabled; }
 
+    static void processSamples(std::vector<int16_t> &samples, bool denoise);
+    static void writeWav(const std::vector<int16_t> &samples, const std::string &path);
+
 private:
     void recordLoop();
-    void applyDenoise(std::vector<int16_t> &samples);
+    static void applyDenoise(std::vector<int16_t> &samples);
     static double normalizeSamples(std::vector<int16_t> &samples);
     static bool detectAndTrim(std::vector<int16_t> &samples);
-    static void writeWav(const std::vector<int16_t> &samples, const std::string &path);
 
     std::thread recordThread_;
     std::atomic<bool> stopRequested_{false};

@@ -61,6 +61,21 @@ AudioCapture::~AudioCapture() {
     if (recordThread_.joinable()) recordThread_.join();
 }
 
+void AudioCapture::processSamples(std::vector<int16_t> &samples, bool denoise) {
+    auto t0 = std::chrono::steady_clock::now();
+
+    double loudness = normalizeSamples(samples);
+    bool isBlank = detectAndTrim(samples);
+
+    if (!isBlank && denoise) applyDenoise(samples);
+
+    auto t1 = std::chrono::steady_clock::now();
+    fprintf(stderr, "Vinput Pipeline [summary] loudness=%.1f isBlank=%d denoise=%d time=%ldms samples=%zu\n",
+            loudness, (int)isBlank, (int)(!isBlank && denoise),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
+            samples.size());
+}
+
 void AudioCapture::start() {
     if (recordThread_.joinable()) return;
     {

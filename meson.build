@@ -3,4 +3,5 @@ project('fcitx5-vinput', 'cpp',
   default_options: ['cpp_std=c++20', 'buildtype=debug'])
 
 subdir('ASR_provider/src')
+subdir('tools')
 subdir('adapter')
