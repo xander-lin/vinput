@@ -24,4 +24,7 @@ package() {
     DESTDIR="$pkgdir" meson install -C build
     install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
+    for f in config/*.json; do
+        install -Dm644 "$f" "$pkgdir/usr/share/doc/$_pkgname/$f"
+    done
 }

@@ -1,0 +1,15 @@
+{
+    "audio": {"lufs_target": -16.0, "speex_level": -15},
+    "doubao": {"poll_interval_msec": 800, "max_polls": 75, "submit_timeout_sec": 30, "query_timeout_sec": 15},
+    "qwen": {"timeout_sec": 60},
+    "zipformer": {
+        "model_dir": "~/.local/share/vinput/models/zipformer-zh-en",
+        "num_threads": 30,
+        "bin_path": "~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx"
+    },
+    "fire_red": {
+        "model_dir": "~/.local/share/vinput/models/sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26",
+        "num_threads": 30,
+        "bin_path": "~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx-offline"
+    }
+}

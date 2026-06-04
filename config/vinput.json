@@ -1,0 +1,5 @@
+{
+    "activation_msec": 300,
+    "notification_timeout": 2000,
+    "debounce_count": 2
+}
