@@ -560,6 +560,9 @@ private:
                     }
                 }
             }
+            audioCapture_->setRecordedCallback([this](const std::vector<int16_t> &samples, const std::string &wav) {
+                if (asr_) asr_->transcribe(samples, wav);
+            });
             audioCapture_->setStateCallback([](bool active) {
                 FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
             });
@@ -602,11 +605,7 @@ private:
 
         if (audioCapture_) {
             audioCapture_->stop();
-            auto samples = audioCapture_->takeSamples();
-            auto wavPath = audioCapture_->wavPath();
-            if (asr_ && !samples.empty()) {
-                asr_->transcribe(std::move(samples), wavPath);
-            }
+            // transcribe already triggered from RecordedCallback during stop()
             audioCapture_.reset();
         }
         asr_.reset();

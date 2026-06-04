@@ -14,6 +14,7 @@ class AudioCapture {
 public:
     using StateCallback = std::function<void(bool active)>;
     using StatusTextCallback = std::function<void(const std::string &)>;
+    using RecordedCallback = std::function<void(const std::vector<int16_t>&, const std::string&)>;
 
     AudioCapture();
     ~AudioCapture();
@@ -28,6 +29,7 @@ public:
 
     void setStateCallback(StateCallback cb) { onState_ = std::move(cb); }
     void setStatusTextCallback(StatusTextCallback cb) { onStatusText_ = std::move(cb); }
+    void setRecordedCallback(RecordedCallback cb) { onRecorded_ = std::move(cb); }
 
     void setDenoiseMethod(const std::string &method) { denoiseMethod_ = method; }
 
@@ -52,6 +54,7 @@ private:
 
     StateCallback onState_;
     StatusTextCallback onStatusText_;
+    RecordedCallback onRecorded_;
 };
 
 } // namespace vinput

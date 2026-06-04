@@ -171,6 +171,9 @@ void AudioCapture::recordLoop() {
         // Step 5: write WAV
         writeWav(batch, wavPath_);
 
+        // Fire callback — ASR can start immediately while main thread does cleanup
+        if (onRecorded_) onRecorded_(batch, wavPath_);
+
         fprintf(stderr, "Vinput Capture [pipeline] loudness=%.1f isBlank=%d denoiser=%s samples=%zu\n",
                 loudness, (int)isBlank, denoiseMethod_.c_str(), batch.size());
 

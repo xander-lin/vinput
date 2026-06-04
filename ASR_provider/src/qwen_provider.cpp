@@ -59,6 +59,11 @@ static void loadConfig(std::string &apiKey) {
     apiKey = jsonGetString(json, "api_key");
 }
 
+static CURL* getCurl() {
+    thread_local CURL *curl = curl_easy_init();
+    return curl;
+}
+
 QwenAsrProvider::QwenAsrProvider() {
     loadConfig(apiKey_);
 }
@@ -103,11 +108,12 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         std::string dataUri = "data:audio/wav;base64," + b64;
         auto tEncode = std::chrono::steady_clock::now();
 
-        CURL *curl = curl_easy_init();
+        CURL *curl = getCurl();
         if (!curl) {
             if (onE) onE("Qwen: curl init failed");
             return;
         }
+        curl_easy_reset(curl);
         std::string respBody;
 
         std::string requestBody =
@@ -143,7 +149,6 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         long httpCode = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
         curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
 
         auto tNetwork = std::chrono::steady_clock::now();
 
