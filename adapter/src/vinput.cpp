@@ -34,6 +34,7 @@
 #include "mock_provider.h"         // 确保 Mock 后端被链接并自动注册
 #include "doubao_provider.h"      // 确保豆包后端被链接并自动注册
 #include "qwen_provider.h"        // 确保千问后端被链接并自动注册
+#include "audio_capture.h"
 
 // notifications addon 公共 API (跨 addon 调用, 仅用于显示切换信息)
 #include <fcitx-module/notifications/notifications_public.h>
@@ -275,6 +276,7 @@ private:
     std::chrono::steady_clock::time_point tPress_, tActivate_, tStop_, tCommit_;
     std::unique_ptr<fcitx::EventSourceTime> timer_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
+    std::unique_ptr<vinput::AudioCapture> audioCapture_;
     fcitx::InputContext *currentIC_ = nullptr;
     fcitx::ICUUID currentUuid_ = {};  // 用于 deactivate 后仍能查找 IC
     std::string lastPreeditText_;       // deactivate 时 commit 用
@@ -471,12 +473,23 @@ private:
             applyAsrConfig();
             setupAsrCallbacks();
 
+            audioCapture_ = std::make_unique<vinput::AudioCapture>();
+            audioCapture_->setStateCallback([](bool active) {
+                FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
+            });
+            audioCapture_->setStatusTextCallback([this](const std::string &text) {
+                std::lock_guard<std::mutex> lk(pendingMutex_);
+                pendingCommits_.emplace_back(PendingCommit{currentUuid_, text, false, true});
+                char c = 1;
+                write(wakePipe_[1], &c, 1);
+            });
+
             playSound("activate");  // 激活音: 高音
-            asr_->start();
+            audioCapture_->start();
         }
     }
 
-        // 注册 ASR 回调
+    // 注册 ASR 回调
     void setupAsrCallbacks() {
         if (!asr_) return;
         asr_->setResultCallback([this](const std::string &text, bool isFinal) {
@@ -484,15 +497,6 @@ private:
         });
         asr_->setErrorCallback([this](const std::string &error) {
             onAsrError(error);
-        });
-        asr_->setStateCallback([](bool active) {
-            FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
-        });
-        asr_->setStatusTextCallback([this](const std::string &text) {
-            std::lock_guard<std::mutex> lk(pendingMutex_);
-            pendingCommits_.emplace_back(PendingCommit{currentUuid_, text, false, true});
-            char c = 1;
-            write(wakePipe_[1], &c, 1);
         });
     }
 
@@ -510,10 +514,16 @@ private:
         auto recMs = std::chrono::duration_cast<std::chrono::milliseconds>(tStop_ - tActivate_).count();
         FCITX_INFO() << "Vinput deactivated (record=" << recMs << "ms)";
 
-        if (asr_) {
-            asr_->stop();
-            asr_.reset();
+        if (audioCapture_) {
+            audioCapture_->stop();
+            auto samples = audioCapture_->takeSamples();
+            auto wavPath = audioCapture_->wavPath();
+            if (asr_ && !samples.empty()) {
+                asr_->transcribe(std::move(samples), wavPath);
+            }
+            audioCapture_.reset();
         }
+        asr_.reset();
         currentIC_ = nullptr;
 
         // commit 最后收到的 preedit 文本

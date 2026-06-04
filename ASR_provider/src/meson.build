@@ -1,6 +1,8 @@
 asr_provider_lib = static_library('asr_provider',
   'asr_provider.h',
   'asr_provider.cpp',
+  'audio_capture.h',
+  'audio_capture.cpp',
   'buffer_detect.h',
   'buffer_detect.cpp',
   'mock_provider.h',
