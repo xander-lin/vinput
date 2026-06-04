@@ -11,7 +11,7 @@ class ZipformerAsrProvider : public IAsrProvider {
 public:
     ZipformerAsrProvider();
 
-    void transcribe(std::vector<int16_t> samples, const std::string &wavPath) override;
+    void transcribe(std::vector<int16_t>, const std::string &wavPath) override;
     void setConfig(const std::string &key, const std::string &value) override;
 
 private:

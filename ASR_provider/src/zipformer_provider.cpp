@@ -40,7 +40,7 @@ void ZipformerAsrProvider::setConfig(const std::string &key,
     }
 }
 
-void ZipformerAsrProvider::transcribe(std::vector<int16_t> samples, const std::string &wavPath) {
+void ZipformerAsrProvider::transcribe(std::vector<int16_t>, const std::string &wavPath) {
     runTranscribe(wavPath, expandPath(modelDir_), onResult_, onError_);
 }
 
@@ -48,7 +48,7 @@ void ZipformerAsrProvider::runTranscribe(const std::string &wav,
                                           const std::string &dir,
                                           AsrResultCallback onR,
                                           AsrErrorCallback onE) {
-    std::thread([=]() {
+    std::thread([=, this]() {
         auto t0 = std::chrono::steady_clock::now();
 
         int pipefd[2];

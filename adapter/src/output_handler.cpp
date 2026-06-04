@@ -45,7 +45,7 @@ OutputHandler::OutputHandler(fcitx::Instance *instance) : instance_(instance) {
 
     wakeWatcher_ = instance_->eventLoop().addIOEvent(
         wakePipe_[0], fcitx::IOEventFlag::In,
-        [this](fcitx::EventSourceIO *, int fd, fcitx::IOEventFlags) -> bool {
+        [this](fcitx::EventSourceIO *, int, fcitx::IOEventFlags) -> bool {
             drainAndCommit();
             return true;
         });

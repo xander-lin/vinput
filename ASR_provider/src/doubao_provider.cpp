@@ -143,7 +143,7 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
         return;
     }
 
-    std::thread([=]() {
+    std::thread([=, this]() {
         auto t0 = std::chrono::steady_clock::now();
         struct Cleanup { std::string p; ~Cleanup() { unlink(p.c_str()); } } _wav{wavPath};
 

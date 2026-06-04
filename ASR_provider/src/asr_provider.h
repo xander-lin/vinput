@@ -16,7 +16,7 @@ public:
 
     virtual void transcribe(std::vector<int16_t> samples, const std::string &wavPath) = 0;
 
-    virtual void setConfig(const std::string &key, const std::string &value) {}
+    virtual void setConfig(const std::string &key, const std::string &value) { (void)key; (void)value; }
 
     void setResultCallback(AsrResultCallback cb) { onResult_ = std::move(cb); }
     void setErrorCallback(AsrErrorCallback cb) { onError_ = std::move(cb); }
