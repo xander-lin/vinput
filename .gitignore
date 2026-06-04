@@ -1,3 +1,4 @@
 builddir/
 compile_commands.json
 log.txt
+out/
