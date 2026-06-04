@@ -4,6 +4,7 @@
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <speex/speex_preprocess.h>
+#include <soxr.h>
 #include <unistd.h>
 #include <cstdio>
 #include <cmath>
@@ -215,33 +216,72 @@ void AudioCapture::applyDenoise(std::vector<int16_t> &samples, const std::string
 void AudioCapture::dfDenoise(std::vector<int16_t> &samples) {
     auto t0 = std::chrono::steady_clock::now();
 
-    const char *home = getenv("HOME");
-    std::string script = home ? std::string(home) + "/.local/share/vinput/scripts/df_denoise.py"
-                              : "";
-    std::string python = home ? std::string(home) + "/Work/Vinput/.venv/bin/python3" : "";
+    // Resample 16kHz → 48kHz
+    size_t inLen = samples.size();
+    double ratio = 48000.0 / 16000.0;
+    size_t outLen48k = (size_t)(inLen * ratio) + 64;
 
-    std::string tmpIn = "/tmp/vinput_df_" + std::to_string(getpid()) + "_in.wav";
-    std::string tmpOut = "/tmp/vinput_df_" + std::to_string(getpid()) + "_out.wav";
+    std::vector<float> fin(inLen);
+    for (size_t i = 0; i < inLen; i++) fin[i] = samples[i] / 32768.0f;
 
-    writeWav(samples, tmpIn);
+    std::vector<float> fout(outLen48k);
+    soxr_error_t err;
+    soxr_t resampler = soxr_create(16000, 48000, 1, &err, nullptr, nullptr, nullptr);
+    if (err) { fprintf(stderr, "Vinput DF: soxr create error\n"); return; }
 
-    std::string cmd = python + " " + script + " " + tmpIn + " " + tmpOut + " 2>/dev/null";
+    size_t consumed, generated;
+    err = soxr_process(resampler, fin.data(), fin.size(), &consumed,
+                       fout.data(), fout.size(), &generated);
+    soxr_delete(resampler);
+    if (err) { fprintf(stderr, "Vinput DF: soxr process error\n"); return; }
+
+    std::vector<int16_t> samples48k(generated);
+    for (size_t i = 0; i < generated; i++)
+        samples48k[i] = (int16_t)std::clamp((int)(fout[i] * 32768.0f), -32768, 32767);
+
+    // Write 48kHz WAV temp
+    std::string tmp48k = "/tmp/vinput_df_" + std::to_string(getpid()) + "_48k.wav";
+    writeWav(samples48k, tmp48k);
+
+    // Run deep-filter (modifies file in-place with -o /tmp)
+    std::string cmd = std::string(getenv("HOME") ? getenv("HOME") : "/tmp")
+                      + "/.local/share/vinput/bin/deep-filter -D -o /tmp " + tmp48k
+                      + " 2>/dev/null";
     int ret = std::system(cmd.c_str());
 
     if (ret == 0) {
-        std::ifstream f(tmpOut, std::ios::binary);
+        // Read back 48kHz WAV
+        std::ifstream f(tmp48k, std::ios::binary);
         if (f) {
             f.seekg(0, std::ios::end);
             size_t size = f.tellg();
             f.seekg(44, std::ios::beg);
             size_t dataSize = size - 44;
-            samples.resize(dataSize / 2);
-            f.read(reinterpret_cast<char *>(samples.data()), dataSize);
+            samples48k.resize(dataSize / 2);
+            f.read(reinterpret_cast<char *>(samples48k.data()), dataSize);
         }
     }
 
-    unlink(tmpIn.c_str());
-    unlink(tmpOut.c_str());
+    unlink(tmp48k.c_str());
+
+    // Resample 48kHz → 16kHz
+    std::vector<float> f48k(samples48k.size());
+    for (size_t i = 0; i < samples48k.size(); i++) f48k[i] = samples48k[i] / 32768.0f;
+
+    size_t outLen16k = (size_t)(f48k.size() / ratio) + 64;
+    std::vector<float> f16k(outLen16k);
+
+    resampler = soxr_create(48000, 16000, 1, &err, nullptr, nullptr, nullptr);
+    if (!err) {
+        err = soxr_process(resampler, f48k.data(), f48k.size(), &consumed,
+                           f16k.data(), f16k.size(), &generated);
+        soxr_delete(resampler);
+    }
+    if (err) { fprintf(stderr, "Vinput DF: soxr downsample error\n"); return; }
+
+    samples.resize(generated);
+    for (size_t i = 0; i < generated; i++)
+        samples[i] = (int16_t)std::clamp((int)(f16k[i] * 32768.0f), -32768, 32767);
 
     auto t1 = std::chrono::steady_clock::now();
     fprintf(stderr, "Vinput Capture [timer] df_denoise=%ldms ret=%d samples=%zu\n",

@@ -3,6 +3,7 @@ fcitx5_module = dependency('Fcitx5Module')
 pulse_simple = dependency('libpulse-simple')
 ebur128 = dependency('libebur128')
 libcurl = dependency('libcurl')
+soxr = dependency('soxr')
 speexdsp = dependency('speexdsp')
 
 asr_provider = asr_provider_dep

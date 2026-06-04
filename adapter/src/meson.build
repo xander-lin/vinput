@@ -1,6 +1,6 @@
 vinput = shared_library('vinput',
   'vinput.cpp',
-  dependencies: [fcitx5_core, fcitx5_module, asr_provider, pulse_simple, ebur128, libcurl, speexdsp],
+  dependencies: [fcitx5_core, fcitx5_module, asr_provider, pulse_simple, ebur128, libcurl, speexdsp, soxr],
   name_prefix: '',
   install: true,
   install_dir: fcitx5_core.get_variable(pkgconfig: 'libdir') / 'fcitx5')
