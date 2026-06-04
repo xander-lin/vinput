@@ -257,3 +257,44 @@ server 进程在 fcitx5 内 `fork()` 出来后不稳定：
 - Wayland V1 下 fcitx5 无法拦截 CapsLock (compositor 先处理)
 - **uinput**: 内核级虚键注入, 兼容所有 compositor。关键: 设备必须**常驻**（创建一次、反复发键），不能每次创建销毁——compositor 需要时间初始化虚拟键盘才能正确处理 modifier 切换
 - XTest 只能影响 XWayland，Wayland 原生应用无效
+
+### systemd 懒启动 WebSocket 服务（替代 fork+exec）
+
+#### 动机
+每录音 fork+exec `sherpa-onnx-offline` 的致命问题：FireRed 1.2GB AED 模型每次初始化 ~3.2s（加载 ONNX + 建计算图），zipformer ~100MB 模型 ~1s。如果用户连说 3 句短句，累计初始化耗时 10s。用 systemd 托管 `sherpa-onnx-offline-websocket-server` 常驻进程，模型只加载一次。
+
+#### 架构
+```
+fcitx5 addon                    systemd --user               sherpa server
+  │                                 │                           │
+  │ portReachable(18000)?          │                           │
+  │  ├─ yes → connect                │                           │
+  │  └─ no  → system("systemctl    │                           │
+  │            --user start         │                           │
+  │            vinput-sherpa-       │                           │
+  │            zipformer")  ──────► │ fork+exec ──────────────► │
+  │              wait port ◄────── │                           │
+  │              connect ──────────────────────────────────►  │
+  │              WAV bytes ◄────────────────────────────────── │
+  │                                 │                           │
+  │ commitString(text)              │                           │
+```
+
+#### 端口分配
+- zipformer (transducer, 100MB): `127.0.0.1:18000`
+- fire_red (AED, 1.2GB): `127.0.0.1:18001`
+
+#### 懒启动机制
+- 服务 `WantedBy=default.target` 但 provider 代码按需 `systemctl --user start`
+- `ensureSherpaService()`: 先 `portReachable()` → 不通则 `systemctl --user start` → poll connect 最多 10s
+- `Restart=on-failure + RestartSec=5`: 进程崩溃自动重启
+- `Slice=user-expensive.slice`: 不挤占桌面进程资源
+
+#### 日志
+- `~/.local/share/vinput/logs/zipformer-server.log`
+- `~/.local/share/vinput/logs/fire-red-server.log`
+
+#### 注意事项
+- 服务有 `RestartSec=5`，崩后 5s 内新一轮识别会 connect 失败（已在 try-catch 中处理，触发 error callback）
+- 两个 server 常驻会占内存（尤其是 FireRed ~5GB），未来可加 idle 自动 stop 机制
+- 如果不需要常驻，`systemctl --user disable --now vinput-sherpa-*` 即可，不影响代码

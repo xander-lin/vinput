@@ -110,32 +110,34 @@ public:
 
                 if (!capturedId.empty()) {
                     niriFocusWindow(capturedId);
+                    // 动态等待: 轮询 focused-window 直到焦点确实切到目标窗口
+                    bool ready = false;
+                    for (int i = 0; i < 50; i++) {  // max 500ms
+                        usleep(10000);
+                        auto cur = niriGetFocusedId();
+                        if (cur == capturedId) { ready = true; break; }
+                    }
+                    if (!ready) {
+                        fprintf(stderr, "Vinput [niri] focus switch timeout after 500ms, committing anyway\n");
+                    }
                 }
 
-                // 等合成器处理焦点切换后提交 (150ms)
-                auto commitTime = fcitx::now(CLOCK_MONOTONIC) + 150000;
-                commitTimer_ = instance_->eventLoop().addTimeEvent(
-                    CLOCK_MONOTONIC, commitTime, 0,
-                    [this, batch = std::move(batch), restoreId, capturedId](
-                        fcitx::EventSourceTime *, uint64_t) mutable {
-                        auto tNow = std::chrono::steady_clock::now();
-                        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tNow - tPress_).count();
-                        fprintf(stderr, "Vinput [timer] press→niri-commit=%ldms\n", ms);
-                        auto *ic = instance_->mostRecentInputContext();
-                        if (ic) {
-                            for (auto &pc : batch) {
-                                FCITX_INFO() << "Vinput [niri-commit] ic=" << ic
-                                             << " program=" << ic->program()
-                                             << " text=\"" << pc.text << "\"";
-                                if (!pc.text.empty()) ic->commitString(pc.text);
-                            }
-                        }
-                        // 恢复原窗口焦点
-                        if (!restoreId.empty() && restoreId != capturedId) {
-                            niriFocusWindow(restoreId);
-                        }
-                        return false;
-                    });
+                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - tPress_).count();
+                fprintf(stderr, "Vinput [timer] press→niri-commit=%ldms\n", ms);
+                auto *ic = instance_->mostRecentInputContext();
+                if (ic) {
+                    for (auto &pc : batch) {
+                        FCITX_INFO() << "Vinput [niri-commit] ic=" << ic
+                                     << " program=" << ic->program()
+                                     << " text=\"" << pc.text << "\"";
+                        if (!pc.text.empty()) ic->commitString(pc.text);
+                    }
+                }
+                // 恢复原窗口焦点
+                if (!restoreId.empty() && restoreId != capturedId) {
+                    niriFocusWindow(restoreId);
+                }
                 return true;
             });
 
@@ -174,25 +176,7 @@ private:
     static constexpr char confFile[] = "conf/vinput.conf";
     static constexpr uint64_t kLongPressUsec = 300 * 1000; // 300ms
 
-    // 还原 CapsLock 状态 — 通过常驻 uinput 虚键发送 CapsLock 按键
-    void revertCapsLock() {
-        if (uinputFd_ < 0) return;
-
-        struct input_event ev = {};
-        ev.type = EV_KEY;
-        ev.code = KEY_CAPSLOCK;
-        ev.value = 1;
-        write(uinputFd_, &ev, sizeof(ev));
-        ev.value = 0;
-        write(uinputFd_, &ev, sizeof(ev));
-        ev.type = EV_SYN;
-        ev.code = SYN_REPORT;
-        ev.value = 0;
-        write(uinputFd_, &ev, sizeof(ev));
-        FCITX_INFO() << "Vinput revert CapsLock via uinput";
-    }
-
-    // 创建常驻 uinput 虚拟键盘设备
+    // 创建常驻 uinput 虚拟键盘设备, 用于还原 CapsLock
     void initUinput() {
         uinputFd_ = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
         if (uinputFd_ < 0) {
@@ -212,10 +196,29 @@ private:
         FCITX_INFO() << "Vinput uinput device created";
     }
 
+    // 还原 CapsLock — 通过 uinput 虚键发送 CapsLock (还原 LED, 会触发 IM 切换但马上恢复)
+    void revertCapsLock() {
+        if (uinputFd_ < 0) return;
+
+        struct input_event ev = {};
+        ev.type = EV_KEY;
+        ev.code = KEY_CAPSLOCK;
+        ev.value = 1;
+        write(uinputFd_, &ev, sizeof(ev));
+        ev.value = 0;
+        write(uinputFd_, &ev, sizeof(ev));
+        ev.type = EV_SYN;
+        ev.code = SYN_REPORT;
+        ev.value = 0;
+        write(uinputFd_, &ev, sizeof(ev));
+        FCITX_INFO() << "Vinput revert CapsLock via uinput";
+    }
+
     fcitx::Instance *instance_;
     VinputConfig config_;
     std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>> keyWatcher_;
     int uinputFd_ = -1;
+    int revertDebounce_ = 0;            // uinput CapsLock 反弹去抖计数
 
     // self-pipe: 后台线程安全唤醒主事件循环
     int wakePipe_[2] = {-1, -1};
@@ -253,9 +256,7 @@ private:
     // 状态
     bool active_ = false;               // 语音录音中
     bool switchActive_ = false;         // Ctrl+CapsLock 切换模式
-    int revertDebounce_ = 0;            // uinput CapsLock 反弹去抖计数
     std::string capturedWinId_;         // niri window id, 录音激活时捕获
-    std::unique_ptr<fcitx::EventSourceTime> commitTimer_;
 
     // 性能计时
     std::chrono::steady_clock::time_point tPress_, tActivate_, tStop_, tCommit_;
