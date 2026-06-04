@@ -65,10 +65,11 @@ def main():
     tmp_48k = f"/tmp/vinput_df_{os.getpid()}_48k.wav"
     wav_write(tmp_48k, samples_48k, 48000)
 
-    # deep-filter modifies input in-place, so we work directly on tmp
-    subprocess.run([DF_BIN, tmp_48k], check=True, capture_output=True)
+    # Run deep-filter — with -o to same dir, file is modified in-place
+    out_dir = os.path.dirname(tmp_48k)
+    subprocess.run([DF_BIN, "-o", out_dir, tmp_48k], check=True, capture_output=True)
 
-    # Read denoised 48kHz
+    # Read denoised 48kHz (modified in-place)
     samples_df, _, _ = wav_read(tmp_48k)
 
     # Resample back to 16kHz
