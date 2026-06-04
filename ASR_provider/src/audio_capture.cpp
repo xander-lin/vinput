@@ -134,8 +134,8 @@ void AudioCapture::recordLoop() {
         // Step 1: ebur128 loudness normalization
         double loudness = normalizeSamples(batch);
 
-        // Step 2: blank audio detection (after normalization)
-        bool isBlank = detectBlank(batch, loudness);
+        // Step 2: VAD-based blank detection + silence trimming
+        bool isBlank = detectAndTrim(batch);
 
         // Step 3: denoise (only if not blank)
         if (!isBlank && denoiseEnabled_) applyDenoise(batch);
@@ -224,8 +224,10 @@ double AudioCapture::normalizeSamples(std::vector<int16_t> &samples) {
     return loudness;
 }
 
-bool AudioCapture::detectBlank(const std::vector<int16_t> &samples, double eburLoudness) {
+bool AudioCapture::detectAndTrim(std::vector<int16_t> &samples) {
     constexpr int kFrameSize = 320;
+    constexpr size_t kPadFrames = 1;
+
     SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
     int enable = 1;
     speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_VAD, &enable);
@@ -234,20 +236,17 @@ bool AudioCapture::detectBlank(const std::vector<int16_t> &samples, double eburL
     int probContinue = 50;
     speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_PROB_CONTINUE, &probContinue);
 
-    bool hasVoice = false;
     size_t frameCount = samples.size() / kFrameSize;
-    for (size_t i = 0; i < frameCount && !hasVoice; i++) {
+    std::vector<bool> voiceFrames(frameCount, false);
+    bool hasVoice = false;
+
+    for (size_t i = 0; i < frameCount; i++) {
         int16_t frame[kFrameSize];
         memcpy(frame, samples.data() + i * kFrameSize, kFrameSize * sizeof(int16_t));
-        if (speex_preprocess_run(st, frame))
+        if (speex_preprocess_run(st, frame)) {
+            voiceFrames[i] = true;
             hasVoice = true;
-    }
-    size_t remainder = samples.size() % kFrameSize;
-    if (!hasVoice && remainder > 0) {
-        int16_t frame[kFrameSize] = {};
-        memcpy(frame, samples.data() + frameCount * kFrameSize, remainder * sizeof(int16_t));
-        if (speex_preprocess_run(st, frame))
-            hasVoice = true;
+        }
     }
 
     speex_preprocess_state_destroy(st);
@@ -256,6 +255,33 @@ bool AudioCapture::detectBlank(const std::vector<int16_t> &samples, double eburL
         fprintf(stderr, "Vinput Capture: no voice detected (speexdsp VAD)\n");
         return true;
     }
+
+    size_t firstVoice = 0;
+    while (firstVoice < frameCount && !voiceFrames[firstVoice]) firstVoice++;
+    size_t lastVoice = frameCount;
+    while (lastVoice > 0 && !voiceFrames[lastVoice - 1]) lastVoice--;
+
+    firstVoice = firstVoice > kPadFrames ? firstVoice - kPadFrames : 0;
+    lastVoice = std::min(lastVoice + kPadFrames, frameCount);
+
+    size_t trimStart = firstVoice * kFrameSize;
+    size_t trimEnd = lastVoice * kFrameSize;
+
+    size_t origSize = samples.size();
+
+    if (trimStart > 0 || trimEnd < origSize) {
+        if (trimEnd < origSize) {
+            samples.erase(samples.begin() + trimEnd, samples.end());
+        }
+        if (trimStart > 0) {
+            samples.erase(samples.begin(), samples.begin() + trimStart);
+        }
+        fprintf(stderr, "Vinput Capture: trimmed %zu leading + %zu trailing samples (orig=%zu now=%zu)\n",
+                trimStart, origSize - trimEnd, origSize, samples.size());
+    } else {
+        fprintf(stderr, "Vinput Capture: voice detected, no trim needed\n");
+    }
+
     return false;
 }
 

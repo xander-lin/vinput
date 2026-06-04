@@ -35,7 +35,7 @@ private:
     void recordLoop();
     void applyDenoise(std::vector<int16_t> &samples);
     static double normalizeSamples(std::vector<int16_t> &samples);
-    static bool detectBlank(const std::vector<int16_t> &samples, double eburLoudness);
+    static bool detectAndTrim(std::vector<int16_t> &samples);
     static void writeWav(const std::vector<int16_t> &samples, const std::string &path);
 
     std::thread recordThread_;
