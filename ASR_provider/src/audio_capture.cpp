@@ -10,8 +10,10 @@
 #include <cstring>
 #include <ctime>
 #include <chrono>
+#include <cstring>
 #include <fstream>
 #include <ebur128.h>
+#include <cstdlib>
 
 namespace vinput {
 
@@ -38,7 +40,7 @@ static std::string jsonGetString(const std::string &json, const std::string &key
     return "";
 }
 
-static void loadAudioConfig(bool &denoiseEnabled) {
+static void loadAudioConfig(std::string &denoiseMethod) {
     const char *home = getenv("HOME");
     if (!home) return;
     std::string path = std::string(home) + "/.config/vinput/audio.json";
@@ -47,13 +49,15 @@ static void loadAudioConfig(bool &denoiseEnabled) {
     std::string json((std::istreambuf_iterator<char>(f)),
                       std::istreambuf_iterator<char>());
     auto val = jsonGetString(json, "denoise");
-    denoiseEnabled = (val == "true");
+    if (val == "deepfilter") denoiseMethod = "deepfilter";
+    else if (val == "speexdsp") denoiseMethod = "speexdsp";
+    else if (val == "true") denoiseMethod = "speexdsp";
 }
 
 AudioCapture::AudioCapture() {
-    loadAudioConfig(denoiseEnabled_);
-    if (denoiseEnabled_)
-        fprintf(stderr, "Vinput Capture: denoise enabled (speexdsp)\n");
+    loadAudioConfig(denoiseMethod_);
+    if (!denoiseMethod_.empty())
+        fprintf(stderr, "Vinput Capture: denoise=%s\n", denoiseMethod_.c_str());
 }
 
 AudioCapture::~AudioCapture() {
@@ -61,19 +65,19 @@ AudioCapture::~AudioCapture() {
     if (recordThread_.joinable()) recordThread_.join();
 }
 
-void AudioCapture::processSamples(std::vector<int16_t> &samples, bool denoise) {
+void AudioCapture::processSamples(std::vector<int16_t> &samples, const std::string &denoiser) {
     auto t0 = std::chrono::steady_clock::now();
 
     double loudness = normalizeSamples(samples);
     bool isBlank = !hasVoice(samples);
 
-    if (!isBlank && denoise) applyDenoise(samples);
+    if (!isBlank && !denoiser.empty()) applyDenoise(samples, denoiser);
 
     trimSilence(samples);
 
     auto t1 = std::chrono::steady_clock::now();
-    fprintf(stderr, "Vinput Pipeline [summary] loudness=%.1f isBlank=%d denoise=%d time=%ldms samples=%zu\n",
-            loudness, (int)isBlank, (int)(!isBlank && denoise),
+    fprintf(stderr, "Vinput Pipeline [summary] loudness=%.1f isBlank=%d denoiser=%s time=%ldms samples=%zu\n",
+            loudness, (int)isBlank, denoiser.c_str(),
             (long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
             samples.size());
 }
@@ -153,9 +157,10 @@ void AudioCapture::recordLoop() {
 
         // Step 2: VAD check (but don't trim yet — denoiser needs leading noise)
         bool isBlank = !hasVoice(batch);
+        bool wantDenoise = !denoiseMethod_.empty();
 
         // Step 3: denoise (with full audio for noise profile learning)
-        if (!isBlank && denoiseEnabled_) applyDenoise(batch);
+        if (!isBlank && wantDenoise) applyDenoise(batch, denoiseMethod_);
 
         // Step 4: trim silence (now that denoiser has processed the noise)
         trimSilence(batch);
@@ -163,8 +168,8 @@ void AudioCapture::recordLoop() {
         // Step 5: write WAV
         writeWav(batch, wavPath_);
 
-        fprintf(stderr, "Vinput Capture [pipeline] loudness=%.1f isBlank=%d denoise=%d samples=%zu\n",
-                loudness, (int)isBlank, (int)(!isBlank && denoiseEnabled_), batch.size());
+        fprintf(stderr, "Vinput Capture [pipeline] loudness=%.1f isBlank=%d denoiser=%s samples=%zu\n",
+                loudness, (int)isBlank, denoiseMethod_.c_str(), batch.size());
 
         {
             std::lock_guard<std::mutex> lk(sampleMutex_);
@@ -173,7 +178,11 @@ void AudioCapture::recordLoop() {
     }
 }
 
-void AudioCapture::applyDenoise(std::vector<int16_t> &samples) {
+void AudioCapture::applyDenoise(std::vector<int16_t> &samples, const std::string &method) {
+    if (method == "deepfilter") {
+        dfDenoise(samples);
+        return;
+    }
     auto t0 = std::chrono::steady_clock::now();
 
     constexpr int kFrameSize = 320;
@@ -201,6 +210,43 @@ void AudioCapture::applyDenoise(std::vector<int16_t> &samples) {
     fprintf(stderr, "Vinput Capture [timer] denoise=%ldms samples=%zu\n",
             (long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
             samples.size());
+}
+
+void AudioCapture::dfDenoise(std::vector<int16_t> &samples) {
+    auto t0 = std::chrono::steady_clock::now();
+
+    const char *home = getenv("HOME");
+    std::string script = home ? std::string(home) + "/.local/share/vinput/scripts/df_denoise.py"
+                              : "";
+    std::string python = home ? std::string(home) + "/Work/Vinput/.venv/bin/python3" : "";
+
+    std::string tmpIn = "/tmp/vinput_df_" + std::to_string(getpid()) + "_in.wav";
+    std::string tmpOut = "/tmp/vinput_df_" + std::to_string(getpid()) + "_out.wav";
+
+    writeWav(samples, tmpIn);
+
+    std::string cmd = python + " " + script + " " + tmpIn + " " + tmpOut + " 2>/dev/null";
+    int ret = std::system(cmd.c_str());
+
+    if (ret == 0) {
+        std::ifstream f(tmpOut, std::ios::binary);
+        if (f) {
+            f.seekg(0, std::ios::end);
+            size_t size = f.tellg();
+            f.seekg(44, std::ios::beg);
+            size_t dataSize = size - 44;
+            samples.resize(dataSize / 2);
+            f.read(reinterpret_cast<char *>(samples.data()), dataSize);
+        }
+    }
+
+    unlink(tmpIn.c_str());
+    unlink(tmpOut.c_str());
+
+    auto t1 = std::chrono::steady_clock::now();
+    fprintf(stderr, "Vinput Capture [timer] df_denoise=%ldms ret=%d samples=%zu\n",
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
+            ret, samples.size());
 }
 
 std::vector<int16_t> AudioCapture::takeSamples() {

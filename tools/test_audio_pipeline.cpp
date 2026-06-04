@@ -15,15 +15,14 @@ static void sigHandler(int) { g_stop = true; }
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <output.wav> [duration_sec=0] [denoise=0|1]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <output.wav> [duration_sec=0] [denoiser=none|speexdsp|deepfilter]\n", argv[0]);
         fprintf(stderr, "  duration_sec=0: record until Ctrl+C (SIGINT)\n");
-        fprintf(stderr, "  denoise=1: enable speexdsp denoise\n");
         return 1;
     }
 
     const char *outPath = argv[1];
     int duration = (argc > 2) ? atoi(argv[2]) : 0;
-    bool denoise = (argc > 3) ? (atoi(argv[3]) != 0) : false;
+    std::string denoiser = (argc > 3) ? argv[3] : "none";
 
     signal(SIGINT, sigHandler);
 
@@ -49,9 +48,9 @@ int main(int argc, char **argv) {
     std::vector<int16_t> samples;
 
     if (duration > 0) {
-        fprintf(stderr, "Recording %ds to %s (denoise=%d)...\n", duration, outPath, (int)denoise);
+        fprintf(stderr, "Recording %ds to %s (denoiser=%s)...\n", duration, outPath, denoiser.c_str());
     } else {
-        fprintf(stderr, "Recording to %s (denoise=%d), press Ctrl+C to stop...\n", outPath, (int)denoise);
+        fprintf(stderr, "Recording to %s (denoiser=%s), press Ctrl+C to stop...\n", outPath, denoiser.c_str());
     }
 
     auto endTime = std::chrono::steady_clock::now() + std::chrono::seconds(duration);
@@ -72,7 +71,7 @@ int main(int argc, char **argv) {
     if (samples.empty()) return 1;
 
     auto t0 = std::chrono::steady_clock::now();
-    vinput::AudioCapture::processSamples(samples, denoise);
+    vinput::AudioCapture::processSamples(samples, denoiser);
     vinput::AudioCapture::writeWav(samples, outPath);
 
     auto t1 = std::chrono::steady_clock::now();
