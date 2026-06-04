@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <cstdio>
 #include <cmath>
+#include <cstring>
 #include <ctime>
 #include <chrono>
 #include <fstream>
@@ -224,29 +225,37 @@ double AudioCapture::normalizeSamples(std::vector<int16_t> &samples) {
 }
 
 bool AudioCapture::detectBlank(const std::vector<int16_t> &samples, double eburLoudness) {
-    double sumSq = 0;
-    int16_t peak = 0;
-    for (auto s : samples) {
-        sumSq += (double)s * (double)s;
-        int16_t a = s >= 0 ? s : (int16_t)-s;
-        if (a > peak) peak = a;
+    constexpr int kFrameSize = 320;
+    SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
+    int enable = 1;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_VAD, &enable);
+    int probStart = 80;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_PROB_START, &probStart);
+    int probContinue = 50;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_PROB_CONTINUE, &probContinue);
+
+    bool hasVoice = false;
+    size_t frameCount = samples.size() / kFrameSize;
+    for (size_t i = 0; i < frameCount && !hasVoice; i++) {
+        int16_t frame[kFrameSize];
+        memcpy(frame, samples.data() + i * kFrameSize, kFrameSize * sizeof(int16_t));
+        if (speex_preprocess_run(st, frame))
+            hasVoice = true;
+    }
+    size_t remainder = samples.size() % kFrameSize;
+    if (!hasVoice && remainder > 0) {
+        int16_t frame[kFrameSize] = {};
+        memcpy(frame, samples.data() + frameCount * kFrameSize, remainder * sizeof(int16_t));
+        if (speex_preprocess_run(st, frame))
+            hasVoice = true;
     }
 
-    if (peak < 100) {
-        fprintf(stderr, "Vinput Capture: blank detected (peak=%d, truly silent)\n", (int)peak);
+    speex_preprocess_state_destroy(st);
+
+    if (!hasVoice) {
+        fprintf(stderr, "Vinput Capture: no voice detected (speexdsp VAD)\n");
         return true;
     }
-
-    double rms = std::sqrt(sumSq / samples.size());
-    double crestFactor = (double)peak / rms;
-
-    constexpr double kCrestThreshold = 8.0;
-    if (crestFactor < kCrestThreshold) {
-        fprintf(stderr, "Vinput Capture: blank detected by crest factor (%.1f, peak=%d rms=%.0f)\n",
-                crestFactor, (int)peak, rms);
-        return true;
-    }
-
     return false;
 }
 
