@@ -313,9 +313,9 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         }
 
         std::string text;
-        auto pos = respBody.find("\"text\"");
+        auto pos = respBody.find("\"text\":\"");
         if (pos != std::string::npos) {
-            pos += 7;
+            pos += 8;
             auto end = respBody.find('"', pos);
             if (end != std::string::npos)
                 text = respBody.substr(pos, end - pos);
