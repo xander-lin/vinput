@@ -297,7 +297,7 @@ void AudioCapture::dfDenoise(std::vector<int16_t> &samples) {
         std::string cmd = std::string(getenv("HOME") ? getenv("HOME") : "/tmp")
                           + "/.local/share/vinput/bin/deep-filter"
                           + " -D -o /tmp " + tmp48k + " 2>/dev/null";
-        std::system(cmd.c_str());
+        (void)!std::system(cmd.c_str());
     }
 
     // Read back 48kHz WAV

@@ -86,7 +86,7 @@ void OutputHandler::enqueue(const std::string &text, bool isStatus) {
         pending_.push_back({text, isStatus});
     }
     char c = 1;
-    write(wakePipe_[1], &c, 1);
+    (void)!write(wakePipe_[1], &c, 1);
 }
 
 void OutputHandler::drainAndCommit() {

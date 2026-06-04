@@ -141,13 +141,13 @@ private:
         ev.type = EV_KEY;
         ev.code = KEY_CAPSLOCK;
         ev.value = 1;
-        write(uinputFd_, &ev, sizeof(ev));
+        (void)!write(uinputFd_, &ev, sizeof(ev));
         ev.value = 0;
-        write(uinputFd_, &ev, sizeof(ev));
+        (void)!write(uinputFd_, &ev, sizeof(ev));
         ev.type = EV_SYN;
         ev.code = SYN_REPORT;
         ev.value = 0;
-        write(uinputFd_, &ev, sizeof(ev));
+        (void)!write(uinputFd_, &ev, sizeof(ev));
         FCITX_INFO() << "Vinput revert CapsLock via uinput";
     }
 

@@ -13,7 +13,7 @@ std::string NiriStrategy::getFocusedWindowId() {
     FILE *f = popen("niri msg focused-window 2>/dev/null", "r");
     if (!f) return "";
     char buf[256] = {};
-    fread(buf, 1, sizeof(buf) - 1, f);
+    (void)!fread(buf, 1, sizeof(buf) - 1, f);
     pclose(f);
     const char *p = strstr(buf, "Window ID ");
     if (!p) return "";
@@ -38,7 +38,7 @@ std::string HyprlandStrategy::getFocusedWindowId() {
     FILE *f = popen("hyprctl activewindow -j 2>/dev/null", "r");
     if (!f) return "";
     char buf[512] = {};
-    fread(buf, 1, sizeof(buf) - 1, f);
+    (void)!fread(buf, 1, sizeof(buf) - 1, f);
     pclose(f);
     const char *p = strstr(buf, "\"address\"");
     if (!p) return "";
