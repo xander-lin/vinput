@@ -130,8 +130,21 @@ void AudioCapture::recordLoop() {
     }
 
     if (!batch.empty()) {
-        if (denoiseEnabled_) applyDenoise(batch);
-        normalizeAndWriteWav(batch, wavPath_);
+        // Step 1: ebur128 loudness normalization
+        double loudness = normalizeSamples(batch);
+
+        // Step 2: blank audio detection (after normalization)
+        bool isBlank = detectBlank(batch, loudness);
+
+        // Step 3: denoise (only if not blank)
+        if (!isBlank && denoiseEnabled_) applyDenoise(batch);
+
+        // Step 4: write WAV
+        writeWav(batch, wavPath_);
+
+        fprintf(stderr, "Vinput Capture [pipeline] loudness=%.1f isBlank=%d denoise=%d samples=%zu\n",
+                loudness, (int)isBlank, (int)(!isBlank && denoiseEnabled_), batch.size());
+
         {
             std::lock_guard<std::mutex> lk(sampleMutex_);
             samples_ = std::move(batch);
@@ -174,8 +187,7 @@ std::vector<int16_t> AudioCapture::takeSamples() {
     return std::move(samples_);
 }
 
-void AudioCapture::normalizeAndWriteWav(std::vector<int16_t> &samples,
-                                         const std::string &path) {
+double AudioCapture::normalizeSamples(std::vector<int16_t> &samples) {
     auto t0 = std::chrono::steady_clock::now();
 
     ebur128_state *ebur = ebur128_init(1, 16000, EBUR128_MODE_I);
@@ -203,6 +215,35 @@ void AudioCapture::normalizeAndWriteWav(std::vector<int16_t> &samples,
     }
 
     auto tGain = std::chrono::steady_clock::now();
+    fprintf(stderr, "Vinput Capture [timer] ebur128=%ldms gain=%ldms loudness=%.1f gain=%.2f\n",
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tEbur - t0).count(),
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tGain - tEbur).count(),
+            loudness, gain);
+
+    return loudness;
+}
+
+bool AudioCapture::detectBlank(const std::vector<int16_t> &samples, double eburLoudness) {
+    if (eburLoudness < -60.0) {
+        fprintf(stderr, "Vinput Capture: blank detected by loudness (%.1f LUFS)\n", eburLoudness);
+        return true;
+    }
+
+    double sumSq = 0;
+    for (auto s : samples) sumSq += (double)s * (double)s;
+    double rms = std::sqrt(sumSq / samples.size());
+
+    constexpr double kBlankRmsThreshold = 80.0;
+    if (rms < kBlankRmsThreshold) {
+        fprintf(stderr, "Vinput Capture: blank detected by RMS (%.1f)\n", rms);
+        return true;
+    }
+
+    return false;
+}
+
+void AudioCapture::writeWav(const std::vector<int16_t> &samples, const std::string &path) {
+    auto t0 = std::chrono::steady_clock::now();
 
     FILE *f = fopen(path.c_str(), "wb");
     if (!f) {
@@ -229,12 +270,8 @@ void AudioCapture::normalizeAndWriteWav(std::vector<int16_t> &samples,
     fclose(f);
 
     auto tWav = std::chrono::steady_clock::now();
-
-    fprintf(stderr, "Vinput Capture [timer] ebur128=%ldms gain=%ldms wav_write=%ldms loudness=%.1f gain=%.2f samples=%zu\n",
-            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tEbur - t0).count(),
-            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tGain - tEbur).count(),
-            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tWav - tGain).count(),
-            loudness, gain, samples.size());
+    fprintf(stderr, "Vinput Capture [timer] wav_write=%ldms\n",
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(tWav - t0).count());
 }
 
 } // namespace vinput

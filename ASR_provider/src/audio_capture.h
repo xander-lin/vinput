@@ -34,8 +34,9 @@ public:
 private:
     void recordLoop();
     void applyDenoise(std::vector<int16_t> &samples);
-    static void normalizeAndWriteWav(std::vector<int16_t> &samples,
-                                      const std::string &path);
+    static double normalizeSamples(std::vector<int16_t> &samples);
+    static bool detectBlank(const std::vector<int16_t> &samples, double eburLoudness);
+    static void writeWav(const std::vector<int16_t> &samples, const std::string &path);
 
     std::thread recordThread_;
     std::atomic<bool> stopRequested_{false};
