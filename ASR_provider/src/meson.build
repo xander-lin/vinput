@@ -11,6 +11,8 @@ asr_provider_lib = static_library('asr_provider',
   'doubao_provider.cpp',
   'fire_red_provider.h',
   'fire_red_provider.cpp',
+  'qwen_provider.h',
+  'qwen_provider.cpp',
   install: false)
 
 asr_provider_dep = declare_dependency(

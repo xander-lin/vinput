@@ -381,3 +381,37 @@ ascii_composer:
 ### sherpa-onnx-offline-websocket-server 崩溃问题
 
 v1.13.2 二进制启动后 ~15s 必定 SIGABRT 崩溃，与 `--num-threads` 和运行环境（fcitx5 内 fork / systemd 独立进程）无关。社区有类似 issue（[#3381](https://github.com/k2-fsa/sherpa-onnx/issues/3381), [#2864](https://github.com/k2-fsa/sherpa-onnx/issues/2864)）。本地模型目前只能用 fork+exec 每录音。
+
+### Qwen3-ASR-Flash Provider（千问语音识别）
+
+#### API 选择
+- **选用模型**: `qwen3-asr-flash`（非 `qwen3-asr-flash-filetrans`）
+- **原因**: filetrans 仅支持公网 URL 输入，不支持 base64 内联音频。flash 模型支持 Data URL (`data:audio/wav;base64,xxx`)，适合本地录音输入
+- **限制**: ≤10MB / ≤5 分钟，语音输入场景足够
+
+#### API 端点
+- 提交: `POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`
+- 认证: `Authorization: Bearer {api_key}`
+- 调用模式: **同步单次调用**（与 Doubao 的 submit+poll 异步模式不同），一次请求返回结果
+
+#### 关键实现差异（vs Doubao）
+- **不需要轮询**: DashScope multimodal API 是同步的，一次 HTTP 调用直接返回识别文本
+- **Data URL 格式**: base64 前需加 `data:audio/wav;base64,` 前缀
+- **消息格式**: 使用 multimodal conversation 格式而非纯 ASR 格式
+- **配置路径**: `~/.config/vinput/qwen.json`（仅 `api_key` 一个字段）
+
+#### 代码位置
+- `ASR_provider/src/qwen_provider.h` — 头文件
+- `ASR_provider/src/qwen_provider.cpp` — 实现
+- Provider ID: `"qwen"`, 显示名: `"Qwen3-ASR-Flash (Alibaba DashScope)"`
+- 工厂注册: 在 `qwen_provider.cpp` 末尾 static 初始化器自动注册
+- `adapter/src/vinput.cpp:36` — include 确保链接
+- `ASR_provider/src/meson.build:13-14` — 编译条目
+
+#### 配置示例
+```json
+{"api_key": "sk-xxx"}
+```
+
+#### API Key 获取
+https://bailian.console.aliyun.com/?tab=model#/api-key（北京地域）
