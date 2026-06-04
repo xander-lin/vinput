@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstring>
 #include <chrono>
+#include <fstream>
 
 // Vinput ASR provider 接口
 #include "asr_provider.h"
@@ -281,12 +282,26 @@ private:
     fcitx::ICUUID currentUuid_ = {};  // 用于 deactivate 后仍能查找 IC
     std::string lastPreeditText_;       // deactivate 时 commit 用
     int providerIndex_ = 0;
+    int denoiserIndex_ = 0;
+
+    static const std::vector<std::string>& denoiserList() {
+        static const std::vector<std::string> list = {"none", "speexdsp", "deepfilter"};
+        return list;
+    }
 
     // 从 keyEvent 提取切换方向, 0 表示非方向键
     static int switchDirection(const fcitx::KeyEvent &keyEvent) {
         switch (keyEvent.key().sym()) {
             case FcitxKey_Left:  case FcitxKey_h: return -1;
             case FcitxKey_Right: case FcitxKey_l: return  1;
+            default: return 0;
+        }
+    }
+
+    static int switchVertical(const fcitx::KeyEvent &keyEvent) {
+        switch (keyEvent.key().sym()) {
+            case FcitxKey_Up:   case FcitxKey_k: return -1;
+            case FcitxKey_Down: case FcitxKey_j: return  1;
             default: return 0;
         }
     }
@@ -310,6 +325,37 @@ private:
         FCITX_INFO() << "Vinput switch ASR provider: " << nextName;
         config_.defaultProvider.setValue(nextId);
         safeSaveAsIni(config_, confFile);
+        playSound("switch");
+    }
+
+    // 切换降噪后端 + 通知 + 持久化
+    void doDenoiserSwitch(int direction) {
+        auto &list = denoiserList();
+        denoiserIndex_ = (denoiserIndex_ + direction + (int)list.size()) % (int)list.size();
+        const auto &name = list[denoiserIndex_];
+
+        auto total = (int)list.size();
+        auto msg = std::string("Denoiser: ") + name
+                   + " (" + std::to_string(denoiserIndex_ + 1)
+                   + "/" + std::to_string(total) + ")";
+        notifications()->call<fcitx::INotifications::sendNotification>(
+            "fcitx5-vinput", 0, "fcitx-vinput",
+            "Vinput", msg,
+            std::vector<std::string>{}, 2000, nullptr, nullptr);
+
+        // 持久化到 audio.json
+        const char *home = getenv("HOME");
+        if (home) {
+            std::string path = std::string(home) + "/.config/vinput/audio.json";
+            std::string content = "{\"denoise\": \"" + name + "\"}\n";
+            FILE *f = fopen(path.c_str(), "w");
+            if (f) {
+                fwrite(content.c_str(), 1, content.size(), f);
+                fclose(f);
+            }
+        }
+
+        FCITX_INFO() << "Vinput switch denoiser: " << name;
         playSound("switch");
     }
 
@@ -394,9 +440,15 @@ private:
 
                 auto list = vinput::AsrProviderRegistry::instance().listFactories();
                 if (!list.empty()) {
-                    auto msg = std::string("Switch model (")
-                               + std::to_string(providerIndex_ + 1)
-                               + "/" + std::to_string((int)list.size()) + ")";
+                    auto &dnList = denoiserList();
+                    int di = denoiserIndex_;
+                    if (di < 0 || di >= (int)dnList.size()) di = 0;
+                    auto msg = std::string("ASR: ") + list[providerIndex_].second
+                               + " (" + std::to_string(providerIndex_ + 1)
+                               + "/" + std::to_string((int)list.size()) + ")\n"
+                               + "Denoiser: " + dnList[di]
+                               + " (" + std::to_string(di + 1)
+                               + "/" + std::to_string((int)dnList.size()) + ")";
                     notifications()->call<fcitx::INotifications::sendNotification>(
                         "fcitx5-vinput", 0, "fcitx-vinput",
                         "Vinput", msg,
@@ -416,12 +468,19 @@ private:
             return;
         }
 
-        // 切换模式下: 箭头/h/l 键切换模型 (可多次)
+        // 切换模式下: 箭头/h/l/j/k 键切换 (可多次)
         if (switchActive_) {
             int dir = switchDirection(keyEvent);
             if (dir != 0) {
                 doProviderSwitch(dir);
                 keyEvent.filterAndAccept();
+                return;
+            }
+            dir = switchVertical(keyEvent);
+            if (dir != 0) {
+                doDenoiserSwitch(dir);
+                keyEvent.filterAndAccept();
+                return;
             }
         }
     }
@@ -474,6 +533,33 @@ private:
             setupAsrCallbacks();
 
             audioCapture_ = std::make_unique<vinput::AudioCapture>();
+            {
+                // 从 audio.json 读取初始降噪方法，设置到 AudioCapture
+                const char *home = getenv("HOME");
+                if (home) {
+                    std::string path = std::string(home) + "/.config/vinput/audio.json";
+                    std::ifstream f(path);
+                    if (f) {
+                        std::string json((std::istreambuf_iterator<char>(f)),
+                                          std::istreambuf_iterator<char>());
+                        auto pos = json.find("\"denoise\"");
+                        if (pos != std::string::npos) {
+                            pos = json.find('"', json.find(':', pos) + 1);
+                            if (pos != std::string::npos) {
+                                pos++;
+                                auto end = json.find('"', pos);
+                                if (end != std::string::npos) {
+                                    auto method = json.substr(pos, end - pos);
+                                    auto &list = denoiserList();
+                                    for (int i = 0; i < (int)list.size(); i++) {
+                                        if (list[i] == method) { denoiserIndex_ = i; break; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             audioCapture_->setStateCallback([](bool active) {
                 FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
             });
