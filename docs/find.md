@@ -298,3 +298,41 @@ fcitx5 addon                    systemd --user               sherpa server
 - 服务有 `RestartSec=5`，崩后 5s 内新一轮识别会 connect 失败（已在 try-catch 中处理，触发 error callback）
 - 两个 server 常驻会占内存（尤其是 FireRed ~5GB），未来可加 idle 自动 stop 机制
 - 如果不需要常驻，`systemctl --user disable --now vinput-sherpa-*` 即可，不影响代码
+
+### rime 拉丁字母模式切换（已解决）
+
+#### 现象
+每次按下 CapsLock，rime 输入方案从雾凇拼音切到拉丁字母（ASCII 模式）。长短按都触发，和 Vinput 插件代码无关。
+
+#### 根因
+rime 默认配置 `~/.local/share/fcitx5/rime/build/default.yaml`：
+```yaml
+ascii_composer:
+  switch_key:
+    Caps_Lock: clear
+```
+`clear` = 清除 preedit + 切换 ascii_mode。
+
+#### 错误排查方向
+- 误以为是 `setCurrentInputMethod()` 重新激活 rime 导致 switch reset
+- 改 `rime_ice.custom.yaml` 的 `"switches/@1/reset"`——但 `@1` 在 rime 补丁中是 **0-based**，指第二个 switch（ascii_punct 标点），不是 ascii_mode
+- 加了 IM 缓存/恢复代码（`savedIM_`、`setCurrentInputMethod()`），均无效，最终全部回退
+
+#### 修复（rime 配置层）
+`~/.local/share/fcitx5/rime/default.custom.yaml`：
+```yaml
+"ascii_composer/switch_key/Caps_Lock": noop
+```
+`noop` = rime 不响应 CapsLock 按键。插件的 `filterAndAccept()` + `revertCapsLock()` 正常工作。
+
+### niri 窗口焦点等待改为动态轮询
+
+固定 150ms → 轮询 `niri msg focused-window`（10ms 间隔，最长 500ms 兜底）。确认焦点切到目标窗口后立刻 commit。典型耗时 150ms → ~30ms。
+
+### 构建部署
+
+安装用 `sudo meson install -C build`（禁止手动 `sudo cp`）。安装路径由 fcitx5 pkgconfig 的 `libdir` 决定。
+
+### sherpa-onnx-offline-websocket-server 崩溃问题
+
+v1.13.2 二进制启动后 ~15s 必定 SIGABRT 崩溃，与 `--num-threads` 和运行环境（fcitx5 内 fork / systemd 独立进程）无关。社区有类似 issue（[#3381](https://github.com/k2-fsa/sherpa-onnx/issues/3381), [#2864](https://github.com/k2-fsa/sherpa-onnx/issues/2864)）。本地模型目前只能用 fork+exec 每录音。
