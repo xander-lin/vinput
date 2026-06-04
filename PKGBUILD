@@ -1,10 +1,18 @@
 # Maintainer: xander-lin
+
+pkgname=fcitx5-vinput-git
+_pkgname=fcitx5-vinput
+pkgver=0.1.0.r9.c116ee6
+pkgrel=1
+pkgdesc="Voice input addon for fcitx5: push-to-talk ASR via CapsLock"
+arch=('x86_64')
 url="https://github.com/xander-lin/vinput"
 license=('MIT')
 depends=('fcitx5' 'libebur128' 'libpulse' 'curl' 'speexdsp' 'libsoxr')
 makedepends=('git' 'meson' 'ninja')
 provides=("$_pkgname")
 conflicts=("$_pkgname")
+install=PKGBUILD.install
 source=("$_pkgname::git+$url.git")
 sha256sums=('SKIP')
 
