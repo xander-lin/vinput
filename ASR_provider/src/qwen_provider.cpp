@@ -1,4 +1,5 @@
 #include "qwen_provider.h"
+#include "vinput_config.h"
 
 #include <curl/curl.h>
 #include <unistd.h>
@@ -59,13 +60,12 @@ static void loadConfig(std::string &apiKey) {
     apiKey = jsonGetString(json, "api_key");
 }
 
-static CURL* getCurl() {
-    thread_local CURL *curl = curl_easy_init();
-    return curl;
-}
-
 QwenAsrProvider::QwenAsrProvider() {
     loadConfig(apiKey_);
+    auto adv = advancedSection("qwen");
+    if (!adv.empty()) {
+        timeout_ = (long)jsonInt(adv, "timeout_sec", (int)timeout_);
+    }
 }
 
 void QwenAsrProvider::setConfig(const std::string &key, const std::string &value) {
@@ -143,7 +143,7 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)requestBody.size());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respBody);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_);
 
         CURLcode res = curl_easy_perform(curl);
         long httpCode = 0;

@@ -9,7 +9,7 @@ static bool _mockRegistered = []() {
 }();
 
 void MockAsrProvider::transcribe(std::vector<int16_t>, const std::string &) {
-    if (onResult_) onResult_("你好世界", true);
+    if (onResult_) onResult_("hello world", true);
 }
 
 } // namespace vinput

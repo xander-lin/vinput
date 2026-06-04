@@ -1,0 +1,27 @@
+# Maintainer: xander-lin
+url="https://github.com/xander-lin/vinput"
+license=('MIT')
+depends=('fcitx5' 'libebur128' 'libpulse' 'curl' 'speexdsp' 'libsoxr')
+makedepends=('git' 'meson' 'ninja')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+source=("$_pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$_pkgname"
+    git describe --long --tags 2>/dev/null || printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "$_pkgname"
+    meson setup build --prefix=/usr --buildtype=plain
+    meson compile -C build
+}
+
+package() {
+    cd "$_pkgname"
+    DESTDIR="$pkgdir" meson install -C build
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
+}

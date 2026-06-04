@@ -17,15 +17,33 @@
 
 #### 检测原理
 ```
-1. 200 字节探针录 6s → 收集每次 read 耗时 readMs[]
-2. 排序 → 找相邻最大 gap: maxGap = sorted[i+1] - sorted[i]
-3. maxGap > 50ms && slowVal > fastVal * 3 → 有中断周期
-   threshold = fastVal + maxGap * 0.3  (自适应, 不写死 1000ms)
-4. CX31993: gap=2004ms → threshold=601ms → 快/慢聚类 → burst=64000
-   250ms卡: gap=250ms → threshold=75ms → 快/慢聚类 → burst=<计算值>
-   连续流:   gap<50ms → 直接返回 16384 默认值
-```
-- 200 字节 = 100 samples @16kHz, burst 始终是 200 的整数倍 → 无需舍入
+
+### 桌面环境策略解耦（refactor: 2026-06-04）
+
+#### 动机
+niri 窗口切换逻辑硬编码在 `OutputHandler` 中，无法支持其他桌面环境（Hyprland、GNOME 等）。
+
+#### 方案
+- 新增 `DesktopStrategy` 抽象接口（`desktop_strategy.h/.cpp`）
+  - `getFocusedWindowId()` / `focusWindow(id)` / `supportsSwitching()` / `name()`
+  - `NoopStrategy`: 空实现，`supportsSwitching()=false`，回退到直接提交
+  - `NiriStrategy`: `niri msg focused-window` / `niri msg action focus-window --id`
+  - `HyprlandStrategy`: `hyprctl activewindow -j` / `hyprctl dispatch focuswindow address:`
+- `OutputHandler` 通过 `DesktopStrategy::create(desktop)` 工厂选择策略
+- 配置文件: `~/.config/vinput/output.json` — `{"desktop": "niri"|"hyprland"|"gnome"|"none"}`
+- 默认值: `"none"`（不执行窗口切换）
+
+#### GNOME 支持情况
+- GNOME/Mutter on Wayland **不支持**程序化窗口焦点切换（无官方 IPC）
+- `gnome` 值被接受但等价于 `none`（NoopStrategy），日志中会提示
+
+#### 各文件变化
+- `adapter/src/desktop_strategy.h/.cpp`：新增，~70 行 + ~70 行
+- `adapter/src/output_handler.h`：移除静态 niri 方法，新增 `desktop_` 成员
+- `adapter/src/output_handler.cpp`：构造函数读取 `output.json` 并实例化策略，所有 niri 调用改为 `desktop_->` 多态调用
+- `adapter/src/vinput.cpp`：无变化
+- `adapter/src/meson.build`：添加 `desktop_strategy.cpp`
+
 
 #### 配置文件
 - 路径: `~/.config/vinput/pa_buffer.json`
@@ -438,6 +456,8 @@ https://bailian.console.aliyun.com/?tab=model#/api-key（北京地域）
 
 ## 2026-06-04 (续)
 
+### ASR 结果→上屏 解耦（refactor: 2026-06-04）
+
 ### 音频处理流水线最终状态
 
 流水线：`录音 → 归一化(ebur128) → 降噪 → VAD trim(裁头尾) → 写WAV`
@@ -465,4 +485,77 @@ https://bailian.console.aliyun.com/?tab=model#/api-key（北京地域）
 - 关键发现: `deep-filter -o <dir>` 当 dir 与输入同目录时原地覆写（非额外输出）
 - musl 预编译版 vs 原生编译: 1038ms → 777ms（25% 快），加 daemon 后 218ms
 - 代码: `ASR_provider/src/audio_capture.cpp:dfDenoise()`
+
+### ASR 结果→上屏 解耦（refactor: 2026-06-04）
+
+#### 动机
+`VinputAddon` 中 self-pipe reader lambda（`vinput.cpp:78-156`）将 ASR 结果处理、状态显示、niri 窗口切换、`commitString()` 调用全部耦合在一个函数中。没有抽象层，无法替换显示策略或扩展。
+
+#### 方案
+- 新增 `OutputHandler` 类（`adapter/src/output_handler.h/.cpp`）：封装 self-pipe 机制、niri 窗口焦点切换、commitString() 调用
+- `VinputAddon` 不再直接管理 pipe/PendingCommit，改由 `OutputHandler` 处理所有上屏逻辑
+- 接口：
+  - `submit(text)` — 提交 ASR 识别结果
+  - `showStatus(text)` — 显示状态文本
+  - `setCaptureWindow(winId)` — 设置 niri 捕获窗口
+  - `setPressTime(t)` — 设置计时参考点
+
+#### 各文件变化
+- `adapter/src/output_handler.h/.cpp`：新增，~130 行
+- `adapter/src/vinput.cpp`：移除 `wakePipe_`、`wakeWatcher_`、`PendingCommit`、`pendingMutex_`、`pendingCommits_`、`capturedWinId_`、`niriFocusWindow()`；新增 `outputHandler_`
+- `adapter/src/meson.build`：添加 `output_handler.cpp` 到编译源
+
+#### 解耦边界
+```
+VinputAddon::onAsrResult()  →  OutputHandler::submit()
+VinputAddon::statusText     →  OutputHandler::showStatus()
+VinputAddon::onActivate()   →  OutputHandler::setCaptureWindow()
+
+OutputHandler 内部:
+  self-pipe  →  drainAndCommit()  →  niri 切换  →  commitString()
+```
+
+#### 当前架构全景
+```
+┌─ VinputAddon ─────────────────────────────────────────────┐
+│  KeyEvent → 生命周期 → ASR/降噪器切换 → 提示音 → 配置       │
+│                                                            │
+│  ┌──────────┐   ┌──────────────┐   ┌──────────────────┐  │
+│  │AudioCapture│  │IAsrProvider  │   │ OutputHandler    │  │
+│  │ 录音/归一化│  │ transcribe() │   │ 上屏(self-pipe,  │  │
+│  │ /降噪/VAD │  │              │   │  niri, commit)    │  │
+│  └──────────┘   └──────────────┘   └──────────────────┘  │
+│       │                │                    ▲             │
+│       └───Callback─────┘────────────────────┘             │
+│         Recorded → transcribe → onResult → submit         │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 配置文件分类（refactor: 2026-06-04）
+
+用户必改 vs 高级可选两个层级：
+
+**用户必改 (lean, 4 个文件):**
+| 文件 | 字段 | 说明 |
+|------|------|------|
+| `doubao.json` | `api_key`, `resource_id` | 豆包 API 凭据 |
+| `qwen.json` | `api_key` | 千问 API 凭据 |
+| `output.json` | `desktop` | 桌面环境 (`niri`/`hyprland`/`gnome`/`none`) |
+| `vinput.json` | `activation_msec`, `debounce_count`, `notification_timeout` | 交互行为参数 |
+
+**高级可选 (单文件, 全部有硬编码默认值):**
+| 文件 | 节 | 字段 |
+|------|-----|------|
+| `advanced.json` | `audio` | `lufs_target`(-16.0), `speex_level`(-15) |
+| | `doubao` | `poll_interval_msec`(800), `max_polls`(75), `submit_timeout_sec`(30), `query_timeout_sec`(15) |
+| | `qwen` | `timeout_sec`(60) |
+| | `zipformer` | `model_dir`, `num_threads`(30), `bin_path` |
+| | `fire_red` | `model_dir`, `num_threads`(30), `bin_path` |
+
+`advanced.json` 不存在时所有值退回到 C++ 硬编码默认值。
+
+#### 辅助函数
+`vinput_config.h` 新增 `advancedSection(key)` — 从 advanced.json 提取嵌套 JSON 节。
+
+
 

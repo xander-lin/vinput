@@ -5,3 +5,5 @@ project('fcitx5-vinput', 'cpp',
 subdir('ASR_provider/src')
 subdir('tools')
 subdir('adapter')
+
+install_man('docs/vinput.1')

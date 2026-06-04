@@ -19,6 +19,8 @@ private:
                        AsrResultCallback onR, AsrErrorCallback onE);
 
     std::string modelDir_;
+    std::string sherpaBin_ = "~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx";
+    int numThreads_ = 30;
 };
 
 class ZipformerAsrProviderFactory : public IAsrProviderFactory {

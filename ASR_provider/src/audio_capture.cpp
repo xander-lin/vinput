@@ -1,5 +1,6 @@
 #include "audio_capture.h"
 #include "buffer_detect.h"
+#include "vinput_config.h"
 
 #include <pulse/simple.h>
 #include <pulse/error.h>
@@ -18,6 +19,9 @@
 #include <cstdlib>
 
 namespace vinput {
+
+double AudioCapture::lufsTarget_ = -16.0;
+int AudioCapture::speexLevel_ = -15;
 
 static std::string jsonGetString(const std::string &json, const std::string &key) {
     std::string q = "\"" + key + "\"";
@@ -60,6 +64,17 @@ AudioCapture::AudioCapture() {
     loadAudioConfig(denoiseMethod_);
     if (!denoiseMethod_.empty())
         fprintf(stderr, "Vinput Capture: denoise=%s\n", denoiseMethod_.c_str());
+
+    static bool configLoaded = false;
+    if (!configLoaded) {
+        auto adv = advancedSection("audio");
+        if (!adv.empty()) {
+            auto t = jsonDouble(adv, "lufs_target", lufsTarget_);
+            if (t > -100.0 && t < 0.0) lufsTarget_ = t;
+            speexLevel_ = jsonInt(adv, "speex_level", speexLevel_);
+        }
+        configLoaded = true;
+    }
 }
 
 AudioCapture::~AudioCapture() {
@@ -197,7 +212,7 @@ void AudioCapture::applyDenoise(std::vector<int16_t> &samples, const std::string
     SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
     int enable = 1;
     speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_DENOISE, &enable);
-    int level = -15;
+    int level = speexLevel_;
     speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &level);
 
     size_t frameCount = samples.size() / kFrameSize;
@@ -291,6 +306,11 @@ void AudioCapture::dfDenoise(std::vector<int16_t> &samples) {
         if (f) {
             f.seekg(0, std::ios::end);
             size_t size = f.tellg();
+            if (size < 44) {
+                fprintf(stderr, "Vinput DF: processed file too small (%zu bytes)\n", size);
+                unlink(tmp48k.c_str());
+                return;
+            }
             f.seekg(44, std::ios::beg);
             size_t dataSize = size - 44;
             samples48k.resize(dataSize / 2);
@@ -339,22 +359,21 @@ double AudioCapture::normalizeSamples(std::vector<int16_t> &samples) {
     ebur128_loudness_global(ebur, &loudness);
     ebur128_destroy(&ebur);
 
-    constexpr double kTargetLUFS = -16.0;
     double gain;
     if (loudness < -70.0 || !std::isfinite(loudness)) {
         fprintf(stderr, "Vinput Capture: audio too quiet (%.1f LUFS), skip norm\n", loudness);
         gain = 1.0;
     } else {
-        gain = std::pow(10.0, (kTargetLUFS - loudness) / 20.0);
+        gain = std::pow(10.0, (lufsTarget_ - loudness) / 20.0);
     }
 
     auto tEbur = std::chrono::steady_clock::now();
 
     for (auto &s : samples) {
-        int32_t v = static_cast<int32_t>(s) * gain;
-        if (v > 32767) v = 32767;
-        if (v < -32768) v = -32768;
-        s = static_cast<int16_t>(v);
+        double vd = static_cast<double>(s) * gain;
+        if (vd > 32767.0) vd = 32767.0;
+        else if (vd < -32768.0) vd = -32768.0;
+        s = static_cast<int16_t>(static_cast<int32_t>(vd));
     }
 
     auto tGain = std::chrono::steady_clock::now();
@@ -367,12 +386,14 @@ double AudioCapture::normalizeSamples(std::vector<int16_t> &samples) {
 }
 
 bool AudioCapture::hasVoice(const std::vector<int16_t> &samples) {
+    if (samples.empty()) return false;
+
     // Crest factor: speech has high peaks relative to RMS (>10), noise is flat (<6)
-    int16_t peak = 0;
+    int32_t peak = 0;
     double sumSq = 0;
     for (auto s : samples) {
         sumSq += (double)s * (double)s;
-        int16_t a = s >= 0 ? s : (int16_t)-s;
+        int32_t a = s >= 0 ? (int32_t)s : -(int32_t)s;
         if (a > peak) peak = a;
     }
 

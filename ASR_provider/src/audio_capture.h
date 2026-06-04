@@ -50,6 +50,8 @@ private:
     std::vector<int16_t> samples_;
     std::string wavPath_;
     size_t bufferBytes_{0};
+    static double lufsTarget_;
+    static int speexLevel_;
     std::string denoiseMethod_;
 
     StateCallback onState_;

@@ -36,6 +36,8 @@
 #include "doubao_provider.h"      // 确保豆包后端被链接并自动注册
 #include "qwen_provider.h"        // 确保千问后端被链接并自动注册
 #include "audio_capture.h"
+#include "output_handler.h"
+#include "vinput_config.h"
 
 // notifications addon 公共 API (跨 addon 调用, 仅用于显示切换信息)
 #include <fcitx-module/notifications/notifications_public.h>
@@ -61,99 +63,20 @@ class VinputAddon : public fcitx::AddonInstance {
 public:
     VinputAddon(fcitx::Instance *instance) : instance_(instance) {
         reloadConfig();
+
+        auto vjson = vinput::readConfigFile("vinput.json");
+        if (!vjson.empty()) {
+            activationUsec_ = (uint64_t)vinput::jsonInt(vjson, "activation_msec", 300) * 1000;
+            notificationTimeout_ = vinput::jsonInt(vjson, "notification_timeout", 2000);
+            debounceCount_ = vinput::jsonInt(vjson, "debounce_count", 2);
+        }
+
         FCITX_INFO() << "Vinput addon loaded";
 
         // 创建常驻 uinput 虚键盘, 用于还原 CapsLock
         initUinput();
 
-        // self-pipe: 后台 ASR 线程安全唤醒主事件循环
-        if (pipe(wakePipe_) != 0) {
-            FCITX_ERROR() << "Vinput: pipe() failed";
-            return;
-        }
-        fcntl(wakePipe_[0], F_SETFL, O_NONBLOCK);
-        fcntl(wakePipe_[1], F_SETFL, O_NONBLOCK);
-        wakeWatcher_ = instance_->eventLoop().addIOEvent(
-            wakePipe_[0], fcitx::IOEventFlag::In,
-            [this](fcitx::EventSourceIO *, int fd, fcitx::IOEventFlags) -> bool {
-                char buf[64];
-                while (read(fd, buf, sizeof(buf)) > 0) {}
-                std::vector<PendingCommit> batch;
-                {
-                    std::lock_guard<std::mutex> lk(pendingMutex_);
-                    batch.swap(pendingCommits_);
-                }
-                // 状态文本: 直接上屏
-                for (auto &pc : batch) {
-                    if (!pc.isStatus) continue;
-                    auto *ic = instance_->mostRecentInputContext();
-                    if (ic && !pc.text.empty()) ic->commitString(pc.text);
-                }
-                // 纯状态消息(无实际文本需要提交)直接返回
-                bool hasCommit = false;
-                for (auto &pc : batch) { if (!pc.isStatus) { hasCommit = true; break; } }
-                if (!hasCommit) return true;
-
-                if (capturedWinId_.empty() || batch.empty()) {
-                    // 无窗口绑定: 直接提交到当前焦点窗口
-                    auto tCommit = std::chrono::steady_clock::now();
-                    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tCommit - tPress_).count();
-                    fprintf(stderr, "Vinput [timer] press→commit=%ldms\n", ms);
-                    for (auto &pc : batch) {
-                        auto *ic = instance_->mostRecentInputContext();
-                        if (!ic) {
-                            FCITX_INFO() << "Vinput [commit] no focused ic, drop";
-                            continue;
-                        }
-                        FCITX_INFO() << "Vinput [commit] ic=" << ic
-                                     << " program=" << ic->program()
-                                     << " text=\"" << pc.text << "\"";
-                        if (!pc.text.empty() && !pc.isStatus) ic->commitString(pc.text);
-                    }
-                    return true;
-                }
-
-                // niri 窗口绑定: 先切换到捕获窗口 → 提交 → 恢复
-                auto capturedId = capturedWinId_;
-                auto restoreId = niriGetFocusedId();
-                if (restoreId == capturedId) {
-                    capturedId.clear();  // 已在目标窗口, 无需跳过
-                }
-                FCITX_INFO() << "Vinput [niri] captured=" << capturedId
-                             << " restore=" << restoreId;
-
-                if (!capturedId.empty()) {
-                    niriFocusWindow(capturedId);
-                    // 动态等待: 轮询 focused-window 直到焦点确实切到目标窗口
-                    bool ready = false;
-                    for (int i = 0; i < 50; i++) {  // max 500ms
-                        usleep(10000);
-                        auto cur = niriGetFocusedId();
-                        if (cur == capturedId) { ready = true; break; }
-                    }
-                    if (!ready) {
-                        fprintf(stderr, "Vinput [niri] focus switch timeout after 500ms, committing anyway\n");
-                    }
-                }
-
-                auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - tPress_).count();
-                fprintf(stderr, "Vinput [timer] press→niri-commit=%ldms\n", ms);
-                auto *ic = instance_->mostRecentInputContext();
-                if (ic) {
-                    for (auto &pc : batch) {
-                        FCITX_INFO() << "Vinput [niri-commit] ic=" << ic
-                                     << " program=" << ic->program()
-                                     << " text=\"" << pc.text << "\"";
-                        if (!pc.text.empty() && !pc.isStatus) ic->commitString(pc.text);
-                    }
-                }
-                // 恢复原窗口焦点
-                if (!restoreId.empty() && restoreId != capturedId) {
-                    niriFocusWindow(restoreId);
-                }
-                return true;
-            });
+        outputHandler_ = std::make_unique<vinput::OutputHandler>(instance_);
 
         // 在 PreInputMethod 阶段监听键盘事件 (早于输入法引擎)
         keyWatcher_ = instance_->watchEvent(
@@ -170,8 +93,6 @@ public:
             ioctl(uinputFd_, UI_DEV_DESTROY);
             close(uinputFd_);
         }
-        if (wakePipe_[0] >= 0) close(wakePipe_[0]);
-        if (wakePipe_[1] >= 0) close(wakePipe_[1]);
     }
 
     // 配置读写
@@ -188,7 +109,9 @@ public:
 
 private:
     static constexpr char confFile[] = "conf/vinput.conf";
-    static constexpr uint64_t kLongPressUsec = 300 * 1000; // 300ms
+    uint64_t activationUsec_ = 300 * 1000;  // from vinput.json: activation_msec
+    int notificationTimeout_ = 2000;         // from vinput.json: notification_timeout
+    int debounceCount_ = 2;                   // from vinput.json: debounce_count
 
     // 创建常驻 uinput 虚拟键盘设备, 用于还原 CapsLock
     void initUinput() {
@@ -234,17 +157,8 @@ private:
     int uinputFd_ = -1;
     int revertDebounce_ = 0;            // uinput CapsLock 反弹去抖计数
 
-    // self-pipe: 后台线程安全唤醒主事件循环
-    int wakePipe_[2] = {-1, -1};
-    std::unique_ptr<fcitx::EventSourceIO> wakeWatcher_;
-    struct PendingCommit {
-        fcitx::ICUUID uuid;
-        std::string text;
-        bool isFinal = false;
-        bool isStatus = false;  // true=仅显示 preedit, 不提交
-    };
-    std::mutex pendingMutex_;
-    std::vector<PendingCommit> pendingCommits_;
+    // Output: encapsulates self-pipe, commit, niri focus switching
+    std::unique_ptr<vinput::OutputHandler> outputHandler_;
 
     // 运行时依赖: notifications addon (仅用于切换显示)
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
@@ -271,10 +185,9 @@ private:
     // 状态
     bool active_ = false;               // 语音录音中
     bool switchActive_ = false;         // Ctrl+CapsLock 切换模式
-    std::string capturedWinId_;         // niri window id, 录音激活时捕获
 
     // 性能计时
-    std::chrono::steady_clock::time_point tPress_, tActivate_, tStop_, tCommit_;
+    std::chrono::steady_clock::time_point tPress_, tActivate_, tStop_;
     std::unique_ptr<fcitx::EventSourceTime> timer_;
     std::unique_ptr<vinput::IAsrProvider> asr_;
     std::unique_ptr<vinput::AudioCapture> audioCapture_;
@@ -320,7 +233,7 @@ private:
         notifications()->call<fcitx::INotifications::sendNotification>(
             "fcitx5-vinput", 0, "fcitx-vinput",
             "Vinput", msg,
-            std::vector<std::string>{}, 2000, nullptr, nullptr);
+            std::vector<std::string>{}, notificationTimeout_, nullptr, nullptr);
 
         FCITX_INFO() << "Vinput switch ASR provider: " << nextName;
         config_.defaultProvider.setValue(nextId);
@@ -341,7 +254,7 @@ private:
         notifications()->call<fcitx::INotifications::sendNotification>(
             "fcitx5-vinput", 0, "fcitx-vinput",
             "Vinput", msg,
-            std::vector<std::string>{}, 2000, nullptr, nullptr);
+            std::vector<std::string>{}, notificationTimeout_, nullptr, nullptr);
 
         // 持久化到 audio.json
         const char *home = getenv("HOME");
@@ -357,32 +270,6 @@ private:
 
         FCITX_INFO() << "Vinput switch denoiser: " << name;
         playSound("switch");
-    }
-
-    // niri IPC: 获取当前焦点窗口 ID
-    std::string niriGetFocusedId() {
-        FILE *f = popen("niri msg focused-window 2>/dev/null", "r");
-        if (!f) return "";
-        char buf[256] = {};
-        fread(buf, 1, sizeof(buf) - 1, f);
-        pclose(f);
-        // 解析 "Window ID 11:" 或 "Window ID 11: (focused)"
-        const char *p = strstr(buf, "Window ID ");
-        if (!p) return "";
-        p += 10;
-        const char *end = strchr(p, ':');
-        if (!end) return "";
-        return std::string(p, end - p);
-    }
-
-    // niri IPC: 聚焦指定窗口
-    void niriFocusWindow(const std::string &id) {
-        if (id.empty()) return;
-        std::string cmd = "niri msg action focus-window --id " + id;
-        pid_t pid;
-        const char *argv[] = {"sh", "-c", cmd.c_str(), nullptr};
-        posix_spawn(&pid, "/bin/sh", nullptr, nullptr,
-                    (char *const *)argv, environ);
     }
 
     // 键盘事件回调
@@ -402,7 +289,7 @@ private:
                     onDeactivate();
                 } else if (switchActive_) {
                     switchActive_ = false;
-                    revertDebounce_ = 2;
+                    revertDebounce_ = debounceCount_;
                     playSound("deactivate");
                     revertCapsLock();
                 } else {
@@ -421,6 +308,7 @@ private:
             }
             if (timer_ || active_ || switchActive_) return;
             tPress_ = std::chrono::steady_clock::now();
+            if (outputHandler_) outputHandler_->setPressTime(tPress_);
             currentIC_ = keyEvent.inputContext();
             if (currentIC_) {
                 currentUuid_ = currentIC_->uuid();
@@ -452,13 +340,13 @@ private:
                     notifications()->call<fcitx::INotifications::sendNotification>(
                         "fcitx5-vinput", 0, "fcitx-vinput",
                         "Vinput", msg,
-                        std::vector<std::string>{}, 2000, nullptr, nullptr);
+                        std::vector<std::string>{}, notificationTimeout_, nullptr, nullptr);
                 }
             } else {
                 // 普通 CapsLock: 启动长按计时器
                 timer_ = instance_->eventLoop().addTimeEvent(
                     CLOCK_MONOTONIC,
-                    fcitx::now(CLOCK_MONOTONIC) + kLongPressUsec, 0,
+                    fcitx::now(CLOCK_MONOTONIC) + activationUsec_, 0,
                     [this](fcitx::EventSourceTime *, uint64_t) {
                         onActivate();
                         return false;
@@ -488,7 +376,6 @@ private:
     // 长按 500ms 后触发
     void onActivate() {
         timer_.reset();
-        active_ = true;
         tActivate_ = std::chrono::steady_clock::now();
         auto pressMs = std::chrono::duration_cast<std::chrono::milliseconds>(tActivate_ - tPress_).count();
         FCITX_INFO() << "Vinput activated (press→activate=" << pressMs << "ms)";
@@ -506,9 +393,9 @@ private:
             return;
         }
 
-        // niri 窗口绑定: 记录当前窗口 ID
-        capturedWinId_ = niriGetFocusedId();
-        FCITX_INFO() << "Vinput [activate] niri window=" << capturedWinId_;
+        // 捕获当前焦点窗口 (通过 OutputHandler 的桌面策略)
+        if (outputHandler_) outputHandler_->captureCurrentWindow();
+        FCITX_INFO() << "Vinput [activate] captured window";
 
         auto list = vinput::AsrProviderRegistry::instance().listFactories();
         if (list.empty()) {
@@ -528,61 +415,68 @@ private:
         asr_ = vinput::AsrProviderRegistry::instance().create(
             list[providerIndex_].first);
 
-        if (asr_) {
-            applyAsrConfig();
-            setupAsrCallbacks();
+        if (!asr_) {
+            FCITX_INFO() << "Vinput: failed to create ASR provider";
+            return;
+        }
 
-            audioCapture_ = std::make_unique<vinput::AudioCapture>();
-            {
-                // 从 audio.json 读取初始降噪方法，设置到 AudioCapture
-                const char *home = getenv("HOME");
-                if (home) {
-                    std::string path = std::string(home) + "/.config/vinput/audio.json";
-                    std::ifstream f(path);
-                    if (f) {
-                        std::string json((std::istreambuf_iterator<char>(f)),
-                                          std::istreambuf_iterator<char>());
-                        auto pos = json.find("\"denoise\"");
+        active_ = true;
+        applyAsrConfig();
+        setupAsrCallbacks();
+
+        audioCapture_ = std::make_unique<vinput::AudioCapture>();
+        {
+            // 从 audio.json 读取初始降噪方法，设置到 AudioCapture
+            const char *home = getenv("HOME");
+            if (home) {
+                std::string path = std::string(home) + "/.config/vinput/audio.json";
+                std::ifstream f(path);
+                if (f) {
+                    std::string json((std::istreambuf_iterator<char>(f)),
+                                      std::istreambuf_iterator<char>());
+                    auto pos = json.find("\"denoise\"");
+                    if (pos != std::string::npos) {
+                        pos = json.find('"', json.find(':', pos) + 1);
                         if (pos != std::string::npos) {
-                            pos = json.find('"', json.find(':', pos) + 1);
-                            if (pos != std::string::npos) {
-                                pos++;
-                                auto end = json.find('"', pos);
-                                if (end != std::string::npos) {
-                                    auto method = json.substr(pos, end - pos);
-                                    auto &list = denoiserList();
-                                    for (int i = 0; i < (int)list.size(); i++) {
-                                        if (list[i] == method) { denoiserIndex_ = i; break; }
-                                    }
+                            pos++;
+                            auto end = json.find('"', pos);
+                            if (end != std::string::npos) {
+                                auto method = json.substr(pos, end - pos);
+                                auto &list = denoiserList();
+                                for (int i = 0; i < (int)list.size(); i++) {
+                                    if (list[i] == method) { denoiserIndex_ = i; break; }
                                 }
                             }
                         }
                     }
                 }
             }
-            audioCapture_->setRecordedCallback([this](const std::vector<int16_t> &samples, const std::string &wav) {
-                if (asr_) asr_->transcribe(samples, wav);
-            });
-            audioCapture_->setStateCallback([](bool active) {
-                FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
-            });
-            audioCapture_->setStatusTextCallback([this](const std::string &text) {
-                std::lock_guard<std::mutex> lk(pendingMutex_);
-                pendingCommits_.emplace_back(PendingCommit{currentUuid_, text, false, true});
-                char c = 1;
-                write(wakePipe_[1], &c, 1);
-            });
-
-            playSound("activate");  // 激活音: 高音
-            audioCapture_->start();
         }
+        audioCapture_->setRecordedCallback([this](const std::vector<int16_t> &samples, const std::string &wav) {
+            if (asr_) asr_->transcribe(samples, wav);
+        });
+        audioCapture_->setStateCallback([](bool active) {
+            FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
+        });
+        audioCapture_->setStatusTextCallback([this](const std::string &text) {
+            if (outputHandler_) outputHandler_->showStatus(text);
+        });
+
+        playSound("activate");
+        audioCapture_->start();
     }
 
     // 注册 ASR 回调
     void setupAsrCallbacks() {
         if (!asr_) return;
-        asr_->setResultCallback([this](const std::string &text, bool isFinal) {
-            onAsrResult(text, isFinal);
+        auto tPress = tPress_;
+        asr_->setResultCallback([this, tPress](const std::string &text, bool isFinal) {
+            auto tResult = std::chrono::steady_clock::now();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tResult - tPress).count();
+            fprintf(stderr, "Vinput [timer] press→result=%ldms\n", ms);
+            FCITX_INFO() << "Vinput ASR result: " << text
+                         << " (final=" << isFinal << ")";
+            if (outputHandler_) outputHandler_->submit(text);
         });
         asr_->setErrorCallback([this](const std::string &error) {
             onAsrError(error);
@@ -625,27 +519,10 @@ private:
 
         playSound("deactivate");  // 结束音: 低音
         // 松键后还原 CapsLock (按下时硬件层已切换, 现在补一个假按键还原)
-        revertDebounce_ = 2;
+        revertDebounce_ = debounceCount_;
         revertCapsLock();
     }
 
-    // ASR 识别结果回调 (可能在后台线程调用)
-    void onAsrResult(const std::string &text, bool isFinal) {
-        auto tResult = std::chrono::steady_clock::now();
-        auto stopToResult = std::chrono::duration_cast<std::chrono::milliseconds>(tResult - tStop_).count();
-        auto pressToResult = std::chrono::duration_cast<std::chrono::milliseconds>(tResult - tPress_).count();
-        fprintf(stderr, "Vinput [timer] stop→result=%ldms, press→result=%ldms\n",
-                stopToResult, pressToResult);
-        FCITX_INFO() << "Vinput ASR result: " << text
-                     << " (final=" << isFinal << ")";
-
-        {
-            std::lock_guard<std::mutex> lk(pendingMutex_);
-            pendingCommits_.emplace_back(PendingCommit{currentUuid_, text, isFinal});
-        }
-        char c = 1;
-        write(wakePipe_[1], &c, 1);
-    }
     // ASR 错误回调
     void onAsrError(const std::string &error) {
         FCITX_INFO() << "Vinput ASR error: " << error;

@@ -21,6 +21,10 @@ private:
 
     std::string apiKey_;
     std::string resourceId_;
+    int pollIntervalMsec_ = 800;
+    int maxPolls_ = 75;
+    long submitTimeout_ = 30;
+    long queryTimeout_ = 15;
 };
 
 class DoubaoAsrProviderFactory : public IAsrProviderFactory {

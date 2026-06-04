@@ -1,4 +1,5 @@
 #include "doubao_provider.h"
+#include "vinput_config.h"
 
 #include <curl/curl.h>
 #include <unistd.h>
@@ -110,6 +111,13 @@ static void loadConfig(std::string &apiKey, std::string &resourceId) {
 
 DoubaoAsrProvider::DoubaoAsrProvider() {
     loadConfig(apiKey_, resourceId_);
+    auto adv = advancedSection("doubao");
+    if (!adv.empty()) {
+        pollIntervalMsec_ = jsonInt(adv, "poll_interval_msec", pollIntervalMsec_);
+        maxPolls_ = jsonInt(adv, "max_polls", maxPolls_);
+        submitTimeout_ = (long)jsonInt(adv, "submit_timeout_sec", (int)submitTimeout_);
+        queryTimeout_ = (long)jsonInt(adv, "query_timeout_sec", (int)queryTimeout_);
+    }
 }
 
 void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &value) {
@@ -156,11 +164,12 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
         std::string taskId = generateUuid();
 
         {
-            CURL *curl = curl_easy_init();
+            CURL *curl = getCurl();
             if (!curl) {
                 if (onE) onE("Doubao: curl init failed");
                 return;
             }
+            curl_easy_reset(curl);
             std::string respBody, respHdr;
 
             std::string submitBody =
@@ -194,13 +203,12 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respBody);
             curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCb);
             curl_easy_setopt(curl, CURLOPT_HEADERDATA, &respHdr);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, submitTimeout_);
 
             CURLcode res = curl_easy_perform(curl);
             long httpCode = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
             curl_slist_free_all(headers);
-            curl_easy_cleanup(curl);
 
             fprintf(stderr, "Vinput Doubao: submit HTTP %ld\n", httpCode);
             if (res != CURLE_OK || httpCode != 200) {
@@ -219,15 +227,15 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
 
         auto tSubmit = std::chrono::steady_clock::now();
 
-        constexpr int kMaxPoll = 75;
-        for (int pollCount = 1; pollCount <= kMaxPoll; pollCount++) {
-            usleep(800000);
+        for (int pollCount = 1; pollCount <= maxPolls_; pollCount++) {
+            usleep(pollIntervalMsec_ * 1000);
 
-            CURL *curl = curl_easy_init();
+            CURL *curl = getCurl();
             if (!curl) {
                 if (onE) onE("Doubao: curl init failed");
                 return;
             }
+            curl_easy_reset(curl);
             std::string respBody, respHdr;
 
             struct curl_slist *headers = nullptr;
@@ -247,13 +255,12 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respBody);
             curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCb);
             curl_easy_setopt(curl, CURLOPT_HEADERDATA, &respHdr);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, queryTimeout_);
 
             CURLcode res = curl_easy_perform(curl);
             long httpCode = 0;
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
             curl_slist_free_all(headers);
-            curl_easy_cleanup(curl);
 
             if (res != CURLE_OK || httpCode != 200) {
                 fprintf(stderr, "Vinput Doubao: query #%d HTTP %ld error, retry\n",

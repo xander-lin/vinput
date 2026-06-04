@@ -1,5 +1,5 @@
 vinput = shared_library('vinput',
-  'vinput.cpp',
+  'vinput.cpp', 'output_handler.cpp', 'desktop_strategy.cpp',
   dependencies: [fcitx5_core, fcitx5_module, asr_provider, pulse_simple, ebur128, libcurl, speexdsp, soxr],
   name_prefix: '',
   install: true,

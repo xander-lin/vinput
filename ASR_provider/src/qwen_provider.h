@@ -20,6 +20,7 @@ private:
                           AsrResultCallback onR, AsrErrorCallback onE);
 
     std::string apiKey_;
+    long timeout_ = 60;
 };
 
 class QwenAsrProviderFactory : public IAsrProviderFactory {
