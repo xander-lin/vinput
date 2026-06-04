@@ -360,6 +360,7 @@ void AudioCapture::trimSilence(std::vector<int16_t> &samples) {
     size_t trimEnd = lastVoice * kFrameSize;
 
     if (trimStart < kMinHeadSamples) trimStart = kMinHeadSamples;
+    if (trimStart > trimEnd) trimStart = trimEnd;
 
     size_t origSize = samples.size();
     if (trimStart >= origSize) return;
