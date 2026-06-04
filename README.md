@@ -55,6 +55,43 @@ echo '{"desktop":"niri"}' > ~/.config/vinput/output.json
 fcitx5 -r
 ```
 
+## Local Models (Optional)
+
+Local models require [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) binaries and model files.
+
+### 1. Install sherpa-onnx binaries
+
+Download the latest Linux release from [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases):
+
+```bash
+# Example for v1.13.x (adjust version as needed)
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-v1.13.2-linux-x64.tar.bz2
+tar xf sherpa-onnx-v1.13.2-linux-x64.tar.bz2
+mkdir -p ~/.local/share/vinput/sherpa-onnx
+cp -r sherpa-onnx-v1.13.2-linux-x64/bin ~/.local/share/vinput/sherpa-onnx/
+```
+
+### 2. Download ASR models
+
+| Model | Size | Download |
+|-------|------|----------|
+| Zipformer (zh-en) | ~100MB | `sherpa-onnx-zipformer-zh-en-2023-06-26.tar.bz2` |
+| FireRed AED (zh-en) | ~1.2GB | `sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26.tar.bz2` |
+
+```bash
+mkdir -p ~/.local/share/vinput/models
+
+# Zipformer
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-zh-en-2023-06-26.tar.bz2
+tar xf sherpa-onnx-zipformer-zh-en-2023-06-26.tar.bz2 -C ~/.local/share/vinput/models/
+
+# FireRed
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26.tar.bz2
+tar xf sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26.tar.bz2 -C ~/.local/share/vinput/models/
+```
+
+Check [sherpa-onnx ASR models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) for the latest model URLs.
+
 ## Configuration
 
 All config in `~/.config/vinput/`. See man page: `man vinput`
