@@ -73,7 +73,8 @@ void AudioCapture::processSamples(std::vector<int16_t> &samples, const std::stri
     double loudness = normalizeSamples(samples);
     bool isBlank = !hasVoice(samples);
 
-    if (!isBlank && !denoiser.empty()) applyDenoise(samples, denoiser);
+    bool wantDenoise = !denoiser.empty() && denoiser != "none";
+    if (!isBlank && wantDenoise) applyDenoise(samples, denoiser);
 
     trimSilence(samples);
 
@@ -181,6 +182,8 @@ void AudioCapture::recordLoop() {
 }
 
 void AudioCapture::applyDenoise(std::vector<int16_t> &samples, const std::string &method) {
+    if (method.empty() || method == "none") return;
+
     if (method == "deepfilter") {
         dfDenoise(samples);
         return;
