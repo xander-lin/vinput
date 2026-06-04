@@ -29,8 +29,11 @@ public:
     void setStateCallback(StateCallback cb) { onState_ = std::move(cb); }
     void setStatusTextCallback(StatusTextCallback cb) { onStatusText_ = std::move(cb); }
 
+    void setDenoiseEnabled(bool enabled) { denoiseEnabled_ = enabled; }
+
 private:
     void recordLoop();
+    void applyDenoise(std::vector<int16_t> &samples);
     static void normalizeAndWriteWav(std::vector<int16_t> &samples,
                                       const std::string &path);
 
@@ -40,6 +43,7 @@ private:
     std::vector<int16_t> samples_;
     std::string wavPath_;
     size_t bufferBytes_{0};
+    bool denoiseEnabled_{false};
 
     StateCallback onState_;
     StatusTextCallback onStatusText_;

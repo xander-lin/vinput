@@ -3,16 +3,57 @@
 
 #include <pulse/simple.h>
 #include <pulse/error.h>
+#include <speex/speex_preprocess.h>
 #include <unistd.h>
 #include <cstdio>
 #include <cmath>
 #include <ctime>
 #include <chrono>
+#include <fstream>
 #include <ebur128.h>
 
 namespace vinput {
 
-AudioCapture::AudioCapture() {}
+static std::string jsonGetString(const std::string &json, const std::string &key) {
+    std::string q = "\"" + key + "\"";
+    auto pos = json.find(q);
+    if (pos == std::string::npos) return "";
+    pos += q.size();
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == ':' || json[pos] == '\t'))
+        pos++;
+    if (pos >= json.size()) return "";
+
+    if (json[pos] == '"') {
+        pos++;
+        auto end = json.find('"', pos);
+        if (end == std::string::npos) return "";
+        return json.substr(pos, end - pos);
+    }
+
+    if (json[pos] == 't' || json[pos] == 'f') {
+        return json.substr(pos, json.find_first_of(",}\n\r \t", pos) - pos);
+    }
+
+    return "";
+}
+
+static void loadAudioConfig(bool &denoiseEnabled) {
+    const char *home = getenv("HOME");
+    if (!home) return;
+    std::string path = std::string(home) + "/.config/vinput/audio.json";
+    std::ifstream f(path);
+    if (!f) return;
+    std::string json((std::istreambuf_iterator<char>(f)),
+                      std::istreambuf_iterator<char>());
+    auto val = jsonGetString(json, "denoise");
+    denoiseEnabled = (val == "true");
+}
+
+AudioCapture::AudioCapture() {
+    loadAudioConfig(denoiseEnabled_);
+    if (denoiseEnabled_)
+        fprintf(stderr, "Vinput Capture: denoise enabled (speexdsp)\n");
+}
 
 AudioCapture::~AudioCapture() {
     stopRequested_ = true;
@@ -89,12 +130,43 @@ void AudioCapture::recordLoop() {
     }
 
     if (!batch.empty()) {
+        if (denoiseEnabled_) applyDenoise(batch);
         normalizeAndWriteWav(batch, wavPath_);
         {
             std::lock_guard<std::mutex> lk(sampleMutex_);
             samples_ = std::move(batch);
         }
     }
+}
+
+void AudioCapture::applyDenoise(std::vector<int16_t> &samples) {
+    auto t0 = std::chrono::steady_clock::now();
+
+    constexpr int kFrameSize = 320;
+    SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
+    int enable = 1;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_DENOISE, &enable);
+    int level = -15;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &level);
+
+    size_t frameCount = samples.size() / kFrameSize;
+    for (size_t i = 0; i < frameCount; i++) {
+        speex_preprocess_run(st, samples.data() + i * kFrameSize);
+    }
+    size_t remainder = samples.size() % kFrameSize;
+    if (remainder > 0) {
+        std::vector<int16_t> pad(samples.end() - remainder, samples.end());
+        pad.resize(kFrameSize, 0);
+        speex_preprocess_run(st, pad.data());
+        std::copy(pad.begin(), pad.begin() + remainder, samples.end() - remainder);
+    }
+
+    speex_preprocess_state_destroy(st);
+
+    auto t1 = std::chrono::steady_clock::now();
+    fprintf(stderr, "Vinput Capture [timer] denoise=%ldms samples=%zu\n",
+            (long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
+            samples.size());
 }
 
 std::vector<int16_t> AudioCapture::takeSamples() {
