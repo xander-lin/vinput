@@ -278,6 +278,7 @@ bool AudioCapture::hasVoice(const std::vector<int16_t> &samples) {
 void AudioCapture::trimSilence(std::vector<int16_t> &samples) {
     constexpr int kFrameSize = 320;
     constexpr size_t kPadFrames = 1;
+    constexpr size_t kMinHeadSamples = 1600;
 
     SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
     int enable = 1;
@@ -311,18 +312,22 @@ void AudioCapture::trimSilence(std::vector<int16_t> &samples) {
 
     size_t trimStart = firstVoice * kFrameSize;
     size_t trimEnd = lastVoice * kFrameSize;
-    size_t origSize = samples.size();
 
-    if (trimStart > 0 || trimEnd < origSize) {
-        if (trimEnd < origSize) {
-            samples.erase(samples.begin() + trimEnd, samples.end());
-        }
-        if (trimStart > 0) {
-            samples.erase(samples.begin(), samples.begin() + trimStart);
-        }
-        fprintf(stderr, "Vinput Capture: trimmed %zu leading + %zu trailing samples (orig=%zu now=%zu)\n",
-                trimStart, origSize - trimEnd, origSize, samples.size());
+    if (trimStart < kMinHeadSamples) trimStart = kMinHeadSamples;
+
+    size_t origSize = samples.size();
+    if (trimStart >= origSize) return;
+
+    if (trimStart > 0) {
+        samples.erase(samples.begin(), samples.begin() + trimStart);
     }
+    size_t shiftedEnd = trimEnd - trimStart;
+    if (shiftedEnd < samples.size()) {
+        samples.erase(samples.begin() + shiftedEnd, samples.end());
+    }
+
+    fprintf(stderr, "Vinput Capture: trimmed %zu leading + %zu trailing samples (orig=%zu now=%zu)\n",
+            trimStart, origSize - trimEnd, origSize, samples.size());
 }
 
 void AudioCapture::writeWav(const std::vector<int16_t> &samples, const std::string &path) {
