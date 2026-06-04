@@ -171,8 +171,8 @@ void AudioCapture::recordLoop() {
         // Step 5: write WAV
         writeWav(batch, wavPath_);
 
-        // Fire callback — ASR can start immediately while main thread does cleanup
-        if (onRecorded_) onRecorded_(batch, wavPath_);
+        // Fire callback — ASR starts immediately if voice detected
+        if (!isBlank && onRecorded_) onRecorded_(batch, wavPath_);
 
         fprintf(stderr, "Vinput Capture [pipeline] loudness=%.1f isBlank=%d denoiser=%s samples=%zu\n",
                 loudness, (int)isBlank, denoiseMethod_.c_str(), batch.size());
@@ -367,34 +367,59 @@ double AudioCapture::normalizeSamples(std::vector<int16_t> &samples) {
 }
 
 bool AudioCapture::hasVoice(const std::vector<int16_t> &samples) {
+    // Crest factor: speech has high peaks relative to RMS (>10), noise is flat (<6)
+    int16_t peak = 0;
+    double sumSq = 0;
+    for (auto s : samples) {
+        sumSq += (double)s * (double)s;
+        int16_t a = s >= 0 ? s : (int16_t)-s;
+        if (a > peak) peak = a;
+    }
+
+    if (peak < 150) return false;
+    double rms = std::sqrt(sumSq / samples.size());
+    double crestFactor = (double)peak / (rms > 0 ? rms : 1);
+    if (crestFactor < 5.0) return false;
+
+    // Secondary: speexdsp VAD must also detect voice in majority of frames
     constexpr int kFrameSize = 320;
+    constexpr double kMinVoiceRatio = 0.15;
+    constexpr size_t kMinVoiceFrames = 5;
 
     SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
     int enable = 1;
     speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_VAD, &enable);
-    int probStart = 80;
+    int probStart = 90;
     speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_PROB_START, &probStart);
-    int probContinue = 50;
+    int probContinue = 70;
     speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_PROB_CONTINUE, &probContinue);
 
-    bool hasVoice = false;
+    size_t voiceCount = 0;
     size_t frameCount = samples.size() / kFrameSize;
-    for (size_t i = 0; i < frameCount && !hasVoice; i++) {
+    for (size_t i = 0; i < frameCount; i++) {
         int16_t frame[kFrameSize];
         memcpy(frame, samples.data() + i * kFrameSize, kFrameSize * sizeof(int16_t));
         if (speex_preprocess_run(st, frame))
-            hasVoice = true;
+            voiceCount++;
     }
     size_t remainder = samples.size() % kFrameSize;
-    if (!hasVoice && remainder > 0) {
+    if (remainder > 0) {
         int16_t frame[kFrameSize] = {};
         memcpy(frame, samples.data() + frameCount * kFrameSize, remainder * sizeof(int16_t));
         if (speex_preprocess_run(st, frame))
-            hasVoice = true;
+            voiceCount++;
+        frameCount++;
     }
-
     speex_preprocess_state_destroy(st);
-    return hasVoice;
+
+    double ratio = frameCount > 0 ? (double)voiceCount / frameCount : 0;
+    fprintf(stderr, "Vinput Capture: VAD crest=%.1f peak=%d voiceCount=%zu/%zu (%.1f%%)\n",
+            crestFactor, (int)peak, voiceCount, frameCount, ratio * 100);
+
+    if (voiceCount < kMinVoiceFrames) return false;
+    if (ratio < kMinVoiceRatio) return false;
+
+    return true;
 }
 
 void AudioCapture::trimSilence(std::vector<int16_t> &samples) {
