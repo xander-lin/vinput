@@ -80,6 +80,17 @@ public:
                     std::lock_guard<std::mutex> lk(pendingMutex_);
                     batch.swap(pendingCommits_);
                 }
+                // 状态文本: 直接上屏
+                for (auto &pc : batch) {
+                    if (!pc.isStatus) continue;
+                    auto *ic = instance_->mostRecentInputContext();
+                    if (ic && !pc.text.empty()) ic->commitString(pc.text);
+                }
+                // 纯状态消息(无实际文本需要提交)直接返回
+                bool hasCommit = false;
+                for (auto &pc : batch) { if (!pc.isStatus) { hasCommit = true; break; } }
+                if (!hasCommit) return true;
+
                 if (capturedWinId_.empty() || batch.empty()) {
                     // 无窗口绑定: 直接提交到当前焦点窗口
                     auto tCommit = std::chrono::steady_clock::now();
@@ -94,7 +105,7 @@ public:
                         FCITX_INFO() << "Vinput [commit] ic=" << ic
                                      << " program=" << ic->program()
                                      << " text=\"" << pc.text << "\"";
-                        if (!pc.text.empty()) ic->commitString(pc.text);
+                        if (!pc.text.empty() && !pc.isStatus) ic->commitString(pc.text);
                     }
                     return true;
                 }
@@ -131,7 +142,7 @@ public:
                         FCITX_INFO() << "Vinput [niri-commit] ic=" << ic
                                      << " program=" << ic->program()
                                      << " text=\"" << pc.text << "\"";
-                        if (!pc.text.empty()) ic->commitString(pc.text);
+                        if (!pc.text.empty() && !pc.isStatus) ic->commitString(pc.text);
                     }
                 }
                 // 恢复原窗口焦点
@@ -227,6 +238,7 @@ private:
         fcitx::ICUUID uuid;
         std::string text;
         bool isFinal = false;
+        bool isStatus = false;  // true=仅显示 preedit, 不提交
     };
     std::mutex pendingMutex_;
     std::vector<PendingCommit> pendingCommits_;
@@ -474,6 +486,12 @@ private:
         });
         asr_->setStateCallback([](bool active) {
             FCITX_INFO() << "Vinput ASR state: " << (active ? "on" : "off");
+        });
+        asr_->setStatusTextCallback([this](const std::string &text) {
+            std::lock_guard<std::mutex> lk(pendingMutex_);
+            pendingCommits_.emplace_back(PendingCommit{currentUuid_, text, false, true});
+            char c = 1;
+            write(wakePipe_[1], &c, 1);
         });
     }
 

@@ -16,6 +16,9 @@ using AsrErrorCallback = std::function<void(const std::string &error)>;
 // 状态变化回调: active=true表示开始录音, false表示停止
 using AsrStateCallback = std::function<void(bool active)>;
 
+// 临时状态文本回调: 用于在输入框中显示临时信息(检测进度等), 仅作 preedit 不会提交
+using AsrStatusTextCallback = std::function<void(const std::string &text)>;
+
 // IAsrProvider — ASR 语音识别后端抽象接口
 class IAsrProvider {
 public:
@@ -33,10 +36,13 @@ public:
 
     void setStateCallback(AsrStateCallback cb) { onState_ = std::move(cb); }
 
+    void setStatusTextCallback(AsrStatusTextCallback cb) { onStatusText_ = std::move(cb); }
+
 protected:
     AsrResultCallback onResult_;
     AsrErrorCallback  onError_;
     AsrStateCallback  onState_;
+    AsrStatusTextCallback onStatusText_;
 };
 
 // AsrProviderFactory — ASR 后端的工厂基类

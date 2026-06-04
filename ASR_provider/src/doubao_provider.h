@@ -38,6 +38,7 @@ private:
     std::string sessionWav_;
     AsrResultCallback sessionOnR_;
     AsrErrorCallback sessionOnE_;
+    size_t bufferBytes_{0};
 };
 
 class DoubaoAsrProviderFactory : public IAsrProviderFactory {

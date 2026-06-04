@@ -1,6 +1,8 @@
 asr_provider_lib = static_library('asr_provider',
   'asr_provider.h',
   'asr_provider.cpp',
+  'buffer_detect.h',
+  'buffer_detect.cpp',
   'mock_provider.h',
   'mock_provider.cpp',
   'zipformer_provider.h',

@@ -1,6 +1,51 @@
 # Vinput 开发发现记录
 
-## 2026-06-03
+## 2026-06-04
+
+### 录音尾部丢失：最终修复（动态缓冲区 + 自动检测）
+
+#### 历史问题
+1. 原始 4K buffer → 尾部丢失
+2. 64K (65536) buffer → 跨双周期阻塞, 丢数据
+3. 16K + drain → 可行但延迟大
+
+#### 最终方案
+- **动态缓冲区**: 首次使用自动检测硬件 burst 大小, 缓存到 `~/.config/vinput/pa_buffer.json`
+- 检测逻辑 (`buffer_detect.cpp`): 256 字节小 buffer 录 6s, 聚类读写耗时识别 fill/burst 周期
+- 每次 `pa_simple_read(buf, N)` 中的 N = 检测到的 burst 字节数, 恰好对齐单周期
+- 无 drain, 无额外的延迟
+
+#### 检测原理
+```
+1. 200 字节探针录 6s → 收集每次 read 耗时 readMs[]
+2. 排序 → 找相邻最大 gap: maxGap = sorted[i+1] - sorted[i]
+3. maxGap > 50ms && slowVal > fastVal * 3 → 有中断周期
+   threshold = fastVal + maxGap * 0.3  (自适应, 不写死 1000ms)
+4. CX31993: gap=2004ms → threshold=601ms → 快/慢聚类 → burst=64000
+   250ms卡: gap=250ms → threshold=75ms → 快/慢聚类 → burst=<计算值>
+   连续流:   gap<50ms → 直接返回 16384 默认值
+```
+- 200 字节 = 100 samples @16kHz, burst 始终是 200 的整数倍 → 无需舍入
+
+#### 配置文件
+- 路径: `~/.config/vinput/pa_buffer.json`
+- 格式: `{"buffer_bytes": 64000}`
+- 未配置时自动检测, 检测后在输入框显示 "Detecting hardware buffer period..."
+- 连续流声卡(无 burst 模式) fallback 到 16384
+
+#### 代码修改
+- 新增: `ASR_provider/src/buffer_detect.h`, `buffer_detect.cpp`
+- `asr_provider.h`: 新增 `AsrStatusTextCallback` + `onStatusText_`
+- 三个 provider: 动态 `std::vector<uint8_t> buf(bufferBytes_)`, 检测前显示状态
+- `vinput.cpp`: PendingCommit 加 `isStatus` 字段, pipe reader 用 `commitString` 直接上屏
+
+#### pa_simple_read 关键特性
+- `pa_simple_read(buf, N)` 成功时**必定返回恰好 N 字节**, 数据不足就死等
+- 不同于 POSIX `read()` 的「有多少返回多少」
+- 缓冲区 > burst → 跨周期死等; 缓冲区 = burst → 完美对齐; 缓冲区 < burst → 多读但无 drain
+- `-s`: 扫频测试 (1/2/3/4/5/8s)
+- `<秒数> <wav>`: 固定时长测试
+- `-i <wav>`: 交互模式 (Ctrl+C 模拟 CapsLock 松键)
 
 ### CX31993 硬件占空比（录音尾部丢失根因）
 

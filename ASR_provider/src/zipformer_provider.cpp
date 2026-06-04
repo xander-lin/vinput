@@ -1,4 +1,5 @@
 #include "zipformer_provider.h"
+#include "buffer_detect.h"
 
 #include <pulse/simple.h>
 #include <pulse/error.h>
@@ -57,14 +58,19 @@ void ZipformerAsrProvider::recordLoop() {
     }
     auto tPaOpen = std::chrono::steady_clock::now();
 
-    // 64K 缓冲区 ≈ 2s 音频, 一次读跨过一个硬件周期, 无需 drain
-    uint8_t buf[65536];
+    if (bufferBytes_ == 0) {
+        bufferBytes_ = loadOrDetectBufferBytes([this](const std::string &msg) {
+            if (onStatusText_) onStatusText_(msg);
+        });
+    }
+    std::vector<uint8_t> buf(bufferBytes_);
+    size_t kFrameCount = buf.size() / 2;
     int nReads = 0;
     while (!stopRequested_) {
-        if (pa_simple_read(pa, buf, sizeof(buf), &error) < 0) break;
-        auto *p = reinterpret_cast<int16_t *>(buf);
+        if (pa_simple_read(pa, buf.data(), buf.size(), &error) < 0) break;
+        auto *p = reinterpret_cast<int16_t *>(buf.data());
         std::lock_guard<std::mutex> lk(sampleMutex_);
-        samples_.insert(samples_.end(), p, p + sizeof(buf) / 2);
+        samples_.insert(samples_.end(), p, p + kFrameCount);
         nReads++;
     }
     auto tRecordEnd = std::chrono::steady_clock::now();
@@ -78,7 +84,7 @@ void ZipformerAsrProvider::recordLoop() {
             (long)std::chrono::duration_cast<std::chrono::milliseconds>(tPaOpen - t0).count(),
             (long)std::chrono::duration_cast<std::chrono::milliseconds>(tRecordEnd - tPaOpen).count(),
             (long)std::chrono::duration_cast<std::chrono::milliseconds>(tPaClose - tRecordEnd).count(),
-            nReads, samples_.size());
+              nReads, samples_.size());
 
     std::vector<int16_t> batch;
     {

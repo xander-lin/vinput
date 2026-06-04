@@ -44,6 +44,7 @@ private:
     std::string sessionDir_;
     AsrResultCallback sessionOnR_;
     AsrErrorCallback sessionOnE_;
+    size_t bufferBytes_{0};
 };
 
 class FireRedAsrProviderFactory : public IAsrProviderFactory {

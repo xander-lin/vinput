@@ -44,6 +44,7 @@ private:
     std::string sessionDir_;
     AsrResultCallback sessionOnR_;
     AsrErrorCallback sessionOnE_;
+    size_t bufferBytes_{0};  // 0=未初始化, 从配置加载或自动检测
 };
 
 class ZipformerAsrProviderFactory : public IAsrProviderFactory {
