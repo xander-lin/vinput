@@ -435,3 +435,34 @@ https://bailian.console.aliyun.com/?tab=model#/api-key（北京地域）
 
 #### 测试结果
 初步测试无异常，功能正常。
+
+## 2026-06-04 (续)
+
+### 音频处理流水线最终状态
+
+流水线：`录音 → 归一化(ebur128) → 降噪 → VAD trim(裁头尾) → 写WAV`
+
+#### 降噪后端（Ctrl+CapsLock 后 ↑↓ 切换）
+| 降噪器 | 多核 | 耗时 | 原理 |
+|--------|------|------|------|
+| none | N/A | 0 | 跳过 |
+| speexdsp | 单线程（自适应，分块会失效） | 3ms | 频谱减法，帧间累积噪声模型 |
+| deepfilter | 单核（GRU 串行依赖） | 220ms | DeepFilterNet3, ONNX tract 推理 |
+
+- **config**: `~/.config/vinput/audio.json` — `{"denoise": "speexdsp"}` / `"deepfilter"` / `false`
+- **deepfilter 二进制**: 自编译（`cargo build --release`），含 `--stay` 常驻 daemon 消除模型加载开销（777ms→220ms）
+- **deefilter 重采样**: libsoxr 16k↔48k（纯 C，零 Python 依赖）
+- **speexdsp 多线程失败原因**: 自适应噪声学习依赖连续帧，分块=每块从头学=无效，回退单线程
+- **deepfilter 多线程不可行**: tract 无多线程计划类型，GRU 帧间串行依赖
+- **VAD trim**: 最小头部裁切 0.2s，峰均比方案已被 speexdsp VAD 替代，trimStart 钳制到 trimEnd 防下溢
+
+#### 测试工具
+- `tools/test_audio_pipeline` — 实时录音测试（PulseAudio → 流水线 → WAV）
+- `tools/test_audio_file` — 文件处理测试（WAV → 流水线 → WAV）
+
+#### DeepFilterNet3 细节
+- 二进制: `~/.local/share/vinput/bin/deep-filter`（自编译原生二进制，--stay 常驻模式）
+- 关键发现: `deep-filter -o <dir>` 当 dir 与输入同目录时原地覆写（非额外输出）
+- musl 预编译版 vs 原生编译: 1038ms → 777ms（25% 快），加 daemon 后 218ms
+- 代码: `ASR_provider/src/audio_capture.cpp:dfDenoise()`
+
