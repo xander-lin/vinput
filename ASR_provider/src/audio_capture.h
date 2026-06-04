@@ -38,7 +38,8 @@ private:
     void recordLoop();
     static void applyDenoise(std::vector<int16_t> &samples);
     static double normalizeSamples(std::vector<int16_t> &samples);
-    static bool detectAndTrim(std::vector<int16_t> &samples);
+    static bool hasVoice(const std::vector<int16_t> &samples);
+    static void trimSilence(std::vector<int16_t> &samples);
 
     std::thread recordThread_;
     std::atomic<bool> stopRequested_{false};
