@@ -13,7 +13,8 @@ makedepends=('git' 'meson' 'ninja')
 provides=("$_pkgname")
 conflicts=("$_pkgname")
 install=PKGBUILD.install
-source=("$_pkgname::git+$url.git")
+# Primary: Gitee (fast in China). Fallback: change to github.com/xander-lin/vinput
+source=("$_pkgname::git+https://gitee.com/xander-lin/vinput.git")
 sha256sums=('SKIP')
 
 pkgver() {
