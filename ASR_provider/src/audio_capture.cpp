@@ -191,54 +191,30 @@ void AudioCapture::applyDenoise(std::vector<int16_t> &samples, const std::string
     auto t0 = std::chrono::steady_clock::now();
 
     constexpr int kFrameSize = 320;
+    SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
+    int enable = 1;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_DENOISE, &enable);
+    int level = -15;
+    speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &level);
+
     size_t frameCount = samples.size() / kFrameSize;
-
-    unsigned nThreads = std::thread::hardware_concurrency();
-    if (nThreads < 1) nThreads = 1;
-    if (nThreads > frameCount) nThreads = (unsigned)frameCount;
-    size_t chunkFrames = (frameCount + nThreads - 1) / nThreads;
-
-    std::vector<std::thread> threads;
-    threads.reserve(nThreads);
-    for (unsigned t = 0; t < nThreads; t++) {
-        size_t start = t * chunkFrames * kFrameSize;
-        size_t end = std::min(start + chunkFrames * kFrameSize, frameCount * kFrameSize);
-        if (start >= end) break;
-
-        threads.emplace_back([&samples, start, end]() {
-            SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
-            int enable = 1;
-            speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_DENOISE, &enable);
-            int level = -15;
-            speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &level);
-
-            for (size_t i = start; i < end; i += kFrameSize) {
-                speex_preprocess_run(st, samples.data() + i);
-            }
-            speex_preprocess_state_destroy(st);
-        });
+    for (size_t i = 0; i < frameCount; i++) {
+        speex_preprocess_run(st, samples.data() + i * kFrameSize);
     }
-    for (auto &th : threads) th.join();
-
     size_t remainder = samples.size() % kFrameSize;
     if (remainder > 0) {
-        SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
-        int enable = 1;
-        speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_DENOISE, &enable);
-        int level = -15;
-        speex_preprocess_ctl(st, SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &level);
-
         std::vector<int16_t> pad(samples.end() - remainder, samples.end());
         pad.resize(kFrameSize, 0);
         speex_preprocess_run(st, pad.data());
         std::copy(pad.begin(), pad.begin() + remainder, samples.end() - remainder);
-        speex_preprocess_state_destroy(st);
     }
 
+    speex_preprocess_state_destroy(st);
+
     auto t1 = std::chrono::steady_clock::now();
-    fprintf(stderr, "Vinput Capture [timer] denoise=%ldms samples=%zu threads=%u\n",
+    fprintf(stderr, "Vinput Capture [timer] denoise=%ldms samples=%zu\n",
             (long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
-            samples.size(), nThreads);
+            samples.size());
 }
 
 void AudioCapture::dfDenoise(std::vector<int16_t> &samples) {
