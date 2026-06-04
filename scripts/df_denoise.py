@@ -67,7 +67,7 @@ def main():
 
     # Run deep-filter — with -o to same dir, file is modified in-place
     out_dir = os.path.dirname(tmp_48k)
-    subprocess.run([DF_BIN, "-o", out_dir, tmp_48k], check=True, capture_output=True)
+    subprocess.run([DF_BIN, "-D", "-o", out_dir, tmp_48k], check=True, capture_output=True)
 
     # Read denoised 48kHz (modified in-place)
     samples_df, _, _ = wav_read(tmp_48k)

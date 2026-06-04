@@ -324,7 +324,7 @@ bool AudioCapture::hasVoice(const std::vector<int16_t> &samples) {
 void AudioCapture::trimSilence(std::vector<int16_t> &samples) {
     constexpr int kFrameSize = 320;
     constexpr size_t kPadFrames = 1;
-    constexpr size_t kMinHeadSamples = 1600;
+    constexpr size_t kMinHeadSamples = 3200;
 
     SpeexPreprocessState *st = speex_preprocess_state_init(kFrameSize, 16000);
     int enable = 1;
