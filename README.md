@@ -57,40 +57,69 @@ fcitx5 -r
 
 ## Local Models (Optional)
 
-Local models require [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) binaries and model files.
-
-### 1. Install sherpa-onnx binaries
-
-Download the latest Linux release from [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases):
+### Prepare directory layout
 
 ```bash
-# Example for v1.13.x (adjust version as needed)
-wget https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-v1.13.2-linux-x64.tar.bz2
-tar xf sherpa-onnx-v1.13.2-linux-x64.tar.bz2
-mkdir -p ~/.local/share/vinput/sherpa-onnx
-cp -r sherpa-onnx-v1.13.2-linux-x64/bin ~/.local/share/vinput/sherpa-onnx/
+mkdir -p ~/.local/share/vinput/{sherpa-onnx/bin,models}
 ```
 
-### 2. Download ASR models
+Expected structure after setup:
+```
+~/.local/share/vinput/
+├── sherpa-onnx/bin/
+│   ├── sherpa-onnx          # Zipformer (streaming transducer)
+│   └── sherpa-onnx-offline  # FireRed (offline AED)
+└── models/
+    ├── zipformer-zh-en/
+    │   ├── encoder-epoch-99-avg-1.onnx
+    │   ├── decoder-epoch-99-avg-1.onnx
+    │   ├── joiner-epoch-99-avg-1.onnx
+    │   └── tokens.txt
+    └── sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26/
+        ├── encoder.int8.onnx
+        ├── decoder.int8.onnx
+        └── tokens.txt
+```
 
-| Model | Size | Download |
-|-------|------|----------|
-| Zipformer (zh-en) | ~100MB | `sherpa-onnx-zipformer-zh-en-2023-06-26.tar.bz2` |
-| FireRed AED (zh-en) | ~1.2GB | `sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26.tar.bz2` |
+### 1. Download & extract sherpa-onnx binaries
 
 ```bash
-mkdir -p ~/.local/share/vinput/models
+# Find latest version at: https://github.com/k2-fsa/sherpa-onnx/releases
+VERSION=v1.13.2
+ARCHIVE="sherpa-onnx-${VERSION}-linux-x64.tar.bz2"
+curl -LO "https://github.com/k2-fsa/sherpa-onnx/releases/download/${VERSION}/${ARCHIVE}"
+tar xf "$ARCHIVE"
+cp -r "sherpa-onnx-${VERSION}-linux-x64/bin/"* ~/.local/share/vinput/sherpa-onnx/bin/
 
-# Zipformer
-wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-zh-en-2023-06-26.tar.bz2
+# Clean up
+rm -rf "sherpa-onnx-${VERSION}-linux-x64" "$ARCHIVE"
+```
+
+### 2. Download & extract ASR models
+
+| Model | Size | Cold Start | Archive |
+|-------|------|------------|---------|
+| Zipformer zh-en | ~100MB | ~1s | `sherpa-onnx-zipformer-zh-en-2023-06-26` |
+| FireRed AED zh-en | ~1.2GB | ~3s | `sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26` |
+
+```bash
+MO="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+
+# Zipformer (real-time streaming transducer)
+curl -LO "$MO/sherpa-onnx-zipformer-zh-en-2023-06-26.tar.bz2"
 tar xf sherpa-onnx-zipformer-zh-en-2023-06-26.tar.bz2 -C ~/.local/share/vinput/models/
 
-# FireRed
-wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26.tar.bz2
+# FireRed (offline AED, higher accuracy)
+curl -LO "$MO/sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26.tar.bz2"
 tar xf sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26.tar.bz2 -C ~/.local/share/vinput/models/
+
+# Clean up
+rm *.tar.bz2
 ```
 
-Check [sherpa-onnx ASR models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) for the latest model URLs.
+> Model archives are at [sherpa-onnx ASR models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models).  
+> Custom paths can be set in `~/.config/vinput/advanced.json`.
+
 
 ## Configuration
 
