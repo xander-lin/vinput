@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <ebur128.h>
 #include <cstdlib>
 
@@ -216,6 +217,23 @@ void AudioCapture::applyDenoise(std::vector<int16_t> &samples, const std::string
 void AudioCapture::dfDenoise(std::vector<int16_t> &samples) {
     auto t0 = std::chrono::steady_clock::now();
 
+    // Lazy-start deep-filter daemon with --stay (model loaded once)
+    static FILE *daemonPipe = nullptr;
+    static bool daemonStartFailed = false;
+    if (!daemonPipe && !daemonStartFailed) {
+        std::string cmd = std::string(getenv("HOME") ? getenv("HOME") : "/tmp")
+                          + "/.local/share/vinput/bin/deep-filter"
+                          + " --stay -D -o /tmp 2>/dev/null";
+        daemonPipe = popen(cmd.c_str(), "w");
+        if (daemonPipe) {
+            fprintf(stderr, "Vinput DF: daemon started\n");
+            setvbuf(daemonPipe, nullptr, _IONBF, 0);
+        } else {
+            fprintf(stderr, "Vinput DF: daemon start failed, falling back to one-shot\n");
+            daemonStartFailed = true;
+        }
+    }
+
     // Resample 16kHz → 48kHz
     size_t inLen = samples.size();
     double ratio = 48000.0 / 16000.0;
@@ -243,14 +261,26 @@ void AudioCapture::dfDenoise(std::vector<int16_t> &samples) {
     std::string tmp48k = "/tmp/vinput_df_" + std::to_string(getpid()) + "_48k.wav";
     writeWav(samples48k, tmp48k);
 
-    // Run deep-filter (modifies file in-place with -o /tmp)
-    std::string cmd = std::string(getenv("HOME") ? getenv("HOME") : "/tmp")
-                      + "/.local/share/vinput/bin/deep-filter -D -o /tmp " + tmp48k
-                      + " 2>/dev/null";
-    int ret = std::system(cmd.c_str());
+    if (daemonPipe) {
+        // Feed path to daemon's stdin, then poll for file modification
+        fprintf(daemonPipe, "%s\n", tmp48k.c_str());
+        fflush(daemonPipe);
+        auto before = std::filesystem::last_write_time(tmp48k);
+        for (int i = 0; i < 100; i++) {
+            usleep(2000);
+            auto now = std::filesystem::last_write_time(tmp48k);
+            if (now != before) break;
+        }
+    } else {
+        // Fallback: one-shot mode
+        std::string cmd = std::string(getenv("HOME") ? getenv("HOME") : "/tmp")
+                          + "/.local/share/vinput/bin/deep-filter"
+                          + " -D -o /tmp " + tmp48k + " 2>/dev/null";
+        std::system(cmd.c_str());
+    }
 
-    if (ret == 0) {
-        // Read back 48kHz WAV
+    // Read back 48kHz WAV
+    {
         std::ifstream f(tmp48k, std::ios::binary);
         if (f) {
             f.seekg(0, std::ios::end);
@@ -284,9 +314,9 @@ void AudioCapture::dfDenoise(std::vector<int16_t> &samples) {
         samples[i] = (int16_t)std::clamp((int)(f16k[i] * 32768.0f), -32768, 32767);
 
     auto t1 = std::chrono::steady_clock::now();
-    fprintf(stderr, "Vinput Capture [timer] df_denoise=%ldms ret=%d samples=%zu\n",
+    fprintf(stderr, "Vinput Capture [timer] df_denoise=%ldms samples=%zu\n",
             (long)std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
-            ret, samples.size());
+            samples.size());
 }
 
 std::vector<int16_t> AudioCapture::takeSamples() {
