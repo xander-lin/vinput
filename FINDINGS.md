@@ -554,6 +554,12 @@ OutputHandler 内部:
 
 `advanced.json` 不存在时所有值退回到 C++ 硬编码默认值。
 
+#### 关键问题：配置加载无日志，排查困难
+- `AudioCapture()` 构造函数中加载 `advanced.json[audio]` 的 crest_threshold/lufs_target/speex_level，但没有任何日志
+- 如果文件不存在 / section 找不到 / JSON 解析失败，静默用默认值 2.4，用户完全不知道
+- `hasVoice()` 的 crest factor 比较同样不记录阈值，只看日志无法确认实际使用的值
+- **修复**: `audio_capture.cpp:77-80` 新增构造函数日志（显示实际解析值或 "not found"），`audio_capture.cpp:408-410` 新增 crestFactor vs crestThreshold_ 对比日志
+
 #### 辅助函数
 `vinput_config.h` 新增 `advancedSection(key)` — 从 advanced.json 提取嵌套 JSON 节。
 

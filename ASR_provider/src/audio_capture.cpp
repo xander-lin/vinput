@@ -74,6 +74,10 @@ AudioCapture::AudioCapture() {
             if (t > -100.0 && t < 0.0) lufsTarget_ = t;
             speexLevel_ = jsonInt(adv, "speex_level", speexLevel_);
             crestThreshold_ = jsonDouble(adv, "crest_threshold", crestThreshold_);
+            fprintf(stderr, "Vinput Capture: config audio section parsed: crest_threshold=%.2f lufs_target=%.1f speex_level=%d\n",
+                    crestThreshold_, lufsTarget_, speexLevel_);
+        } else {
+            fprintf(stderr, "Vinput Capture: advanced.json [audio] section not found, using defaults\n");
         }
         configLoaded = true;
     }
@@ -401,6 +405,9 @@ bool AudioCapture::hasVoice(const std::vector<int16_t> &samples) {
 
     double rms = std::sqrt(sumSq / samples.size());
     double crestFactor = (double)peak / (rms > 0 ? rms : 1);
+    fprintf(stderr, "Vinput Capture: crestFactor=%.2f crestThreshold_=%.2f peak=%d rms=%.2f %s\n",
+            crestFactor, crestThreshold_, (int)peak, rms,
+            crestFactor < crestThreshold_ ? "SILENCE (crest below threshold)" : "HAS VOICE (crest passes)");
     if (crestFactor < crestThreshold_) return false;
 
     // Secondary: speexdsp VAD must also detect voice in majority of frames
