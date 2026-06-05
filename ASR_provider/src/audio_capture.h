@@ -52,6 +52,7 @@ private:
     size_t bufferBytes_{0};
     static double lufsTarget_;
     static int speexLevel_;
+    static double crestThreshold_;
     std::string denoiseMethod_;
 
     StateCallback onState_;

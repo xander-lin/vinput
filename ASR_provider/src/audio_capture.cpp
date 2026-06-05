@@ -22,6 +22,7 @@ namespace vinput {
 
 double AudioCapture::lufsTarget_ = -16.0;
 int AudioCapture::speexLevel_ = -15;
+double AudioCapture::crestThreshold_ = 2.4;
 
 static std::string jsonGetString(const std::string &json, const std::string &key) {
     std::string q = "\"" + key + "\"";
@@ -72,6 +73,7 @@ AudioCapture::AudioCapture() {
             auto t = jsonDouble(adv, "lufs_target", lufsTarget_);
             if (t > -100.0 && t < 0.0) lufsTarget_ = t;
             speexLevel_ = jsonInt(adv, "speex_level", speexLevel_);
+            crestThreshold_ = jsonDouble(adv, "crest_threshold", crestThreshold_);
         }
         configLoaded = true;
     }
@@ -388,7 +390,7 @@ double AudioCapture::normalizeSamples(std::vector<int16_t> &samples) {
 bool AudioCapture::hasVoice(const std::vector<int16_t> &samples) {
     if (samples.empty()) return false;
 
-    // Crest factor: speech has high peaks relative to RMS (>10), noise is flat (<6)
+    // Crest factor: speech has high peaks relative to RMS, noise is flat
     int32_t peak = 0;
     double sumSq = 0;
     for (auto s : samples) {
@@ -397,10 +399,9 @@ bool AudioCapture::hasVoice(const std::vector<int16_t> &samples) {
         if (a > peak) peak = a;
     }
 
-    if (peak < 150) return false;
     double rms = std::sqrt(sumSq / samples.size());
     double crestFactor = (double)peak / (rms > 0 ? rms : 1);
-    if (crestFactor < 5.0) return false;
+    if (crestFactor < crestThreshold_) return false;
 
     // Secondary: speexdsp VAD must also detect voice in majority of frames
     constexpr int kFrameSize = 320;

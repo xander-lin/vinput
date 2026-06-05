@@ -1,5 +1,5 @@
 {
-    "audio": {"lufs_target": -16.0, "speex_level": -15},
+    "audio": {"lufs_target": -16.0, "speex_level": -15, "crest_threshold": 2.4},
     "doubao": {"poll_interval_msec": 800, "max_polls": 75, "submit_timeout_sec": 30, "query_timeout_sec": 15},
     "qwen": {"timeout_sec": 60},
     "zipformer": {
