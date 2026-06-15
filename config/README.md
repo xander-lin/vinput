@@ -1,0 +1,39 @@
+# Configuration Examples
+
+This directory stores example configuration files only. Runtime configuration lives in `~/.config/vinput/`.
+
+## Boundary
+
+- Track `*.json.example` in Git.
+- Do not track `*.json` in this directory.
+- Real API keys, local paths, and user preferences belong in `~/.config/vinput/*.json`.
+- `.gitignore` ignores `config/*.json` to reduce the chance of committing real credentials.
+
+## Initial Setup
+
+```bash
+mkdir -p ~/.config/vinput
+cp config/doubao.json.example ~/.config/vinput/doubao.json
+cp config/qwen.json.example ~/.config/vinput/qwen.json
+cp config/output.json.example ~/.config/vinput/output.json
+cp config/audio.json.example ~/.config/vinput/audio.json
+cp config/vinput.json.example ~/.config/vinput/vinput.json
+cp config/advanced.json.example ~/.config/vinput/advanced.json
+```
+
+After copying, edit the files under `~/.config/vinput/`. Do not put real keys into files under this repository.
+
+## Files
+
+| Example | Runtime file | Purpose |
+|---------|--------------|---------|
+| `doubao.json.example` | `~/.config/vinput/doubao.json` | Doubao API key and resource ID |
+| `qwen.json.example` | `~/.config/vinput/qwen.json` | Alibaba DashScope API key |
+| `output.json.example` | `~/.config/vinput/output.json` | Desktop strategy: `niri`, `hyprland`, `gnome`, or `none` |
+| `audio.json.example` | `~/.config/vinput/audio.json` | Active denoiser: `none`, `speexdsp`, or `deepfilter` |
+| `vinput.json.example` | `~/.config/vinput/vinput.json` | Activation delay, notifications, CapsLock debounce |
+| `advanced.json.example` | `~/.config/vinput/advanced.json` | Optional model paths, timeouts, thread counts, and audio tuning |
+
+## Update Rule
+
+When adding a new runtime config key, update the relevant `.json.example`, this README, and the user-facing configuration section in `README.md`.

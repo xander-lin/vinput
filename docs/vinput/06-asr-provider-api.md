@@ -1,10 +1,16 @@
-# ASR Provider API 文档
+# ASR Provider API
 
-## 概述
+## Scope
 
-ASR_provider 定义了语音识别后端的抽象接口。adapter 通过 `IAsrProvider` 接口驱动任意 ASR 后端，无需关心具体实现。
+`ASR_provider` defines the speech recognition backend contract used by the fcitx5 adapter. Providers receive already captured audio and return recognized text. They do not own keyboard events, fcitx5 input contexts, desktop focus switching, or text commit.
 
-## 接口
+Audio capture and preprocessing are handled by `AudioCapture` before a provider is called:
+
+```text
+AudioCapture -> samples + wavPath -> IAsrProvider::transcribe() -> onResult/onError
+```
+
+## Interface
 
 ```cpp
 // ASR_provider/src/asr_provider.h
@@ -12,106 +18,98 @@ ASR_provider 定义了语音识别后端的抽象接口。adapter 通过 `IAsrPr
 namespace vinput {
 
 using AsrResultCallback = std::function<void(const std::string &text, bool isFinal)>;
-using AsrErrorCallback  = std::function<void(const std::string &error)>;
-using AsrStateCallback  = std::function<void(bool active)>;
+using AsrErrorCallback = std::function<void(const std::string &error)>;
 
 class IAsrProvider {
-    virtual void start() = 0;   // 开始录音 & 识别
-    virtual void stop() = 0;    // 停止
+public:
+    virtual ~IAsrProvider() = default;
 
-    void setResultCallback(AsrResultCallback cb);  // 注册结果回调
-    void setErrorCallback(AsrErrorCallback cb);    // 注册错误回调
-    void setStateCallback(AsrStateCallback cb);    // 注册状态回调
+    virtual void transcribe(std::vector<int16_t> samples,
+                            const std::string &wavPath) = 0;
+
+    virtual void setConfig(const std::string &key, const std::string &value);
+
+    void setResultCallback(AsrResultCallback cb);
+    void setErrorCallback(AsrErrorCallback cb);
 };
 
 class IAsrProviderFactory {
-    virtual std::string id() const = 0;             // 唯一标识, e.g. "openai-whisper"
-    virtual std::string name() const = 0;           // 显示名称, e.g. "OpenAI Whisper"
+public:
+    virtual ~IAsrProviderFactory() = default;
+    virtual std::string id() const = 0;
+    virtual std::string name() const = 0;
     virtual std::unique_ptr<IAsrProvider> create() = 0;
 };
 
 } // namespace vinput
 ```
 
-## 生命周期
+## Lifecycle
 
+```text
+adapter                         AudioCapture                  ASR provider
+  |                                  |                              |
+  |-- start() ---------------------->| open PulseAudio              |
+  |                                  | capture/process/write WAV    |
+  |-- stop() ----------------------->| finish capture               |
+  |<---------------- samples,wavPath-|                              |
+  |-- transcribe(samples,wavPath) -------------------------------->|
+  |<------------------------------ onResult(text,true)/onError ----|
+  |-- OutputHandler::submit(text)    |                              |
 ```
-adapter                          ASR provider
-  │                                   │
-  │── create("mock") ────────────────>│  创建实例
-  │── setResultCallback(cb) ─────────>│  注册回调
-  │── start() ───────────────────────>│  开始录音
-  │                                   │── onResult(text, false)  // 中间结果
-  │                                   │── onResult(text, true)   // 最终结果
-  │── stop() ────────────────────────>│  停止录音
-  │                                   │
-```
 
-## 回调说明
+## Callbacks
 
-| 回调 | 签名 | 说明 |
-|------|------|------|
-| onResult | `(text, isFinal)` | 识别文本，`isFinal=false` 是中间结果（会随更多输入变化），`isFinal=true` 是最终结果 |
-| onError | `(error)` | 错误描述 |
-| onState | `(active)` | `true` 开始录音，`false` 停止 |
+| Callback | Signature | Meaning |
+|----------|-----------|---------|
+| `onResult` | `(text, isFinal)` | Recognized text. Current providers return final text; streaming providers may use `isFinal=false` for partial results. |
+| `onError` | `(error)` | Human-readable provider failure. |
 
-## Registry 注册机制
+Recording state and status text belong to `AudioCapture`, not `IAsrProvider`.
+
+## Registry
+
+Provider factories self-register during static initialization. The ASR static library is linked with `link_whole` so those registration objects are retained.
 
 ```cpp
-// 在 adapter 初始化时注册所有可用后端
-auto &reg = AsrProviderRegistry::instance();
-reg.registerFactory(std::make_unique<MyProviderFactory>());
-
-// 获取可用后端列表
-auto list = reg.listFactories();  // [{id, name}, ...]
-
-// 根据 ID 创建实例
-auto asr = reg.create("openai-whisper");
+auto &reg = vinput::AsrProviderRegistry::instance();
+auto list = reg.listFactories();
+auto asr = reg.create("mock");
 ```
 
-## 已有实现
+## Implementations
 
-| ID | 名称 | 状态 |
-|----|------|------|
-| `mock` | Mock (test) | 已实现，用于测试，start() 立即返回 "你好世界" |
+| ID | Name | Input | External dependency |
+|----|------|-------|---------------------|
+| `mock` | Mock (test) | generated samples or empty WAV path | none |
+| `doubao` | Doubao AUC | WAV path / encoded WAV | API key in `~/.config/vinput/doubao.json` |
+| `qwen` | Qwen3-ASR-Flash | WAV path / Data URL | API key in `~/.config/vinput/qwen.json` |
+| `zipformer` | Local Zipformer | WAV path / local binary | sherpa-onnx binary and model files |
+| `fire_red` | Local FireRed | WAV path / local binary | sherpa-onnx-offline binary and model files |
 
-## 如何添加新后端
+## Adding A Provider
 
-1. 在 `ASR_provider/src/` 下创建 `xxx_provider.h` 和 `xxx_provider.cpp`
-2. 继承 `IAsrProvider` 实现 `start()` / `stop()`
-3. 继承 `IAsrProviderFactory` 提供 `id()` / `name()` / `create()`
-4. **在 .cpp 末尾加静态注册代码，编译后自动注册：**
-
-```cpp
-// 静态初始化：程序启动时自动注册到全局 Registry
-static bool _registered = []() {
-    vinput::AsrProviderRegistry::instance().registerFactory(
-        std::make_unique<MyProviderFactory>());
-    return true;
-}();
-```
-
-无需修改 adapter 代码，编译链接即可被自动发现。
-
-## 示例骨架
+1. Add `xxx_provider.h` and `xxx_provider.cpp` under `ASR_provider/src/`.
+2. Implement `IAsrProvider::transcribe(samples, wavPath)`.
+3. Implement `IAsrProviderFactory::id()`, `name()`, and `create()`.
+4. Register the factory in the provider `.cpp` with a static initializer.
+5. Add the provider source to `ASR_provider/src/meson.build`.
+6. Verify with `meson test -C build` and a provider-specific manual test if it depends on network, model files, or hardware.
 
 ```cpp
 #include "asr_provider.h"
 
 class MyProvider : public vinput::IAsrProvider {
-    void start() override {
-        if (onState_) onState_(true);
-        // 1. 打开麦克风录音
-        // 2. 流式发送音频到 ASR API
-        // 3. 收到结果后调用 onResult_(text, isFinal)
-        // 4. 出错调用 onError_(msg)
-    }
-    void stop() override {
-        if (onState_) onState_(false);
+public:
+    void transcribe(std::vector<int16_t> samples,
+                    const std::string &wavPath) override {
+        // Use samples and/or wavPath. Do not open the microphone here.
+        if (onResult_) onResult_("recognized text", true);
     }
 };
 
 class MyProviderFactory : public vinput::IAsrProviderFactory {
+public:
     std::string id() const override { return "my-provider"; }
     std::string name() const override { return "My ASR Provider"; }
     std::unique_ptr<vinput::IAsrProvider> create() override {
@@ -119,42 +117,40 @@ class MyProviderFactory : public vinput::IAsrProviderFactory {
     }
 };
 
-// 自动注册
-static bool _myRegistered = []() {
+static bool myRegistered = []() {
     vinput::AsrProviderRegistry::instance().registerFactory(
         std::make_unique<MyProviderFactory>());
     return true;
 }();
 ```
 
-## 运行时切换
+## Adapter Integration
 
-语音输入激活后（CapsLock 长按中），按以下键切换后端：
-
-| 按键 | 操作 |
-|------|------|
-| ← / h | 上一个后端 |
-| → / l | 下一个后端 |
-
-切换时会显示通知（后端名 + 序号），同时自动保存为默认配置。
-
-## adapter 集成方式
-
-adapter 通过 Registry 创建 ASR 实例，生命周期绑定在激活/停止之间：
+The adapter creates a provider at activation time, records audio through `AudioCapture`, then calls `transcribe()` from the recorded callback.
 
 ```cpp
-// 激活时
-onActivate() {
-    asr_ = AsrProviderRegistry::instance().create("mock");
-    asr_->setResultCallback([this](auto &text, bool final) {
-        if (final) currentIC_->commitString(text);
-    });
-    asr_->start();
-}
+asr_ = vinput::AsrProviderRegistry::instance().create(providerId);
+asr_->setResultCallback([this](const std::string &text, bool isFinal) {
+    if (outputHandler_ && isFinal) outputHandler_->submit(text);
+});
+asr_->setErrorCallback([this](const std::string &error) {
+    onAsrError(error);
+});
 
-// 停止时
-onDeactivate() {
-    asr_->stop();
-    asr_.reset();
-}
+audioCapture_ = std::make_unique<vinput::AudioCapture>();
+audioCapture_->setRecordedCallback([this](const std::vector<int16_t> &samples,
+                                           const std::string &wavPath) {
+    if (asr_) asr_->transcribe(samples, wavPath);
+});
+audioCapture_->start();
 ```
+
+## Verification
+
+Default automated verification does not require microphone hardware or API keys:
+
+```bash
+meson test -C build
+```
+
+Provider-specific verification is still required for cloud APIs and local model backends because those depend on external credentials, network, binaries, and model files.

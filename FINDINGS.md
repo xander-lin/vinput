@@ -565,3 +565,91 @@ OutputHandler 内部:
 
 
 
+## 2026-06-15
+
+### 项目规范化重构：自动化测试与模块边界
+
+#### 问题
+- `meson test -C build` 原先输出 `No tests defined.`，没有任何自动化回归入口。
+- `docs/vinput/06-asr-provider-api.md` 仍描述旧的 `IAsrProvider::start()/stop()` 录音契约，和当前 `transcribe(samples, wavPath)` 实现不一致。
+- `ASR_provider/` 与 `adapter/` 缺少模块级 `WhyThisArchWork.md`，不能满足模块边界和架构论证要求。
+- `ASR_provider/src/meson.build` 没有声明自身使用的 `libpulse-simple`、`libebur128`、`libcurl`、`soxr`、`speexdsp` 依赖，依赖边界泄漏到 consumer。
+
+#### 已改动
+- 新增 `tests/meson.build` 并在根 `meson.build` 中 `subdir('tests')`。
+- 新增 `tests/test_asr_registry.cpp`：验证 `AsrProviderRegistry` 静态注册、`mock` provider 创建和 `transcribe()` 回调结果。
+- 新增 `tests/test_audio_capture_file.cpp`：生成确定性 16kHz mono 样本，走 `AudioCapture::processSamples(samples, "none")` 和 `AudioCapture::writeWav()`，验证 WAV header/data size。
+- 新增 `tests/README.md`：说明自动化测试边界和 fixture 策略。当前测试使用内存生成音频，不依赖麦克风/API/模型/桌面。
+- 更新 `ASR_provider/src/meson.build`：`asr_provider_dep` 现在包含 ASR 模块自身的外部库依赖，consumer 只需依赖 `asr_provider_dep`。
+- 简化 `tools/meson.build`：`test_audio_file` 只依赖 `asr_provider_dep`；`test_audio_pipeline` 额外保留直接使用的 `libpulse-simple`。
+- 更新 `.gitignore`：忽略当前实际本地构建目录 `build/` 和项目级虚拟环境 `.venv/`。
+- 重写 `docs/vinput/06-asr-provider-api.md`：当前契约是 `AudioCapture -> samples + wavPath -> IAsrProvider::transcribe() -> onResult/onError`。
+- 重写 `docs/vinput/05-voice-input-design.md`：补齐 `VinputAddon`、`AudioCapture`、`IAsrProvider`、`OutputHandler`、`DesktopStrategy` 的当前数据流和失败模式。
+- 新增 `ASR_provider/WhyThisArchWork.md` 与 `adapter/WhyThisArchWork.md`，记录职责边界、依赖、数据流、失败模式、替换成本、验证方式和独立子 Agent 审查结论。
+
+#### 验证
+- `meson setup build --reconfigure`：成功，Build targets 从 4 增加到 6。
+- `ninja -C build`：成功。
+- `meson test -C build`：2/2 通过。
+
+#### 独立审查
+- 使用 explore 子 Agent 审查项目规范符合性，确认最高优先级问题为：缺少 Meson 自动化测试、ASR Provider API 文档过期、缺少 `WhyThisArchWork.md`、ASR Meson 依赖边界不清。
+- 本次重构采纳了这些建议中的 P0 项和一项 P1 依赖边界修复。
+
+### 项目规范化重构：配置样例与手动工具边界
+
+#### 问题
+- `config/*.json` 被 Git 跟踪，虽然当前是占位符，但文件名和运行时配置一致，容易误提交真实 API key。
+- `README.md` 直接写入 JSON 配置，弱化了“仓库保存样例、用户本地保存真实配置”的边界。
+- `tools/` 下的 `test_*` 文件名容易和自动化测试混淆，但它们依赖麦克风、PulseAudio 或历史诊断上下文，不应默认进入 `meson test`。
+- `README.md` 使用 `yay -S`，和本机 AUR 工具约定 `paru` 不一致。
+
+#### 已改动
+- `config/doubao.json`、`config/qwen.json`、`config/output.json`、`config/audio.json`、`config/vinput.json`、`config/advanced.json` 迁移为对应的 `.json.example` 文件。
+- `.gitignore` 新增 `config/*.json`，避免仓库误收真实本地配置；`.json.example` 仍可跟踪。
+- `README.md` 改为复制 `config/*.json.example` 到 `~/.config/vinput/*.json` 后再编辑本地配置。
+- `README.md` 的 AUR 示例从 `yay -S fcitx5-vinput-git` 改为 `paru -S fcitx5-vinput-git`。
+- 新增 `tools/README.md`，明确 `tools/` 是手动诊断和集成辅助；默认自动化测试在 `tests/` 中通过 `meson test -C build` 运行。
+- `tools/meson.build` 删除不再需要的直接依赖查询，仅保留 `test_audio_pipeline` 直接使用的 `libpulse-simple`。
+
+#### 验证
+- 并行运行 `meson setup build --reconfigure` 与 `ninja -C build` 时，Meson build directory lock 冲突导致 reconfigure 一次失败；这是并行验证方式问题，不是项目构建失败。
+- 顺序运行 `meson setup build --reconfigure`：成功。
+- `ninja -C build`：成功。
+- `meson test -C build`：2/2 通过。
+
+### 项目规范化重构：ASR_provider 与 config 文档边界
+
+#### 问题
+- `ASR_provider/src/` 仍是扁平目录，直接移动文件会引入较大 include/meson 风险，但缺少 README 描述逻辑分组和迁移规则。
+- `config/` 已迁移为 `.json.example`，但缺少目录级 README 固定“仓库样例 vs 用户真实配置”的边界。
+
+#### 已改动
+- 新增 `ASR_provider/README.md`：记录 public contract、当前逻辑分组（Core/Audio/Providers/Support/Build）、依赖归属、添加 provider 的步骤、失败边界和验证方式。
+- 新增 `config/README.md`：记录 `*.json.example` 跟踪规则、`config/*.json` 禁止跟踪规则、复制到 `~/.config/vinput/` 的初始化命令、各配置文件用途和新增配置键时的更新规则。
+- 更新 `README.md`：明确 `config/*.json.example` 只是仓库样例，运行时配置文件应放在 `~/.config/vinput/`，仓库内 `config/*.json` 被 Git 忽略。
+
+#### 验证
+- `ninja -C build`：成功。
+- `meson test -C build`：2/2 通过。
+
+#### 未处理风险
+- `ASR_provider/src/` 目录仍较平，但已有 `ASR_provider/README.md` 固定逻辑分组。后续如继续增长，可在测试保护下分阶段移动到 `core/`、`audio/`、`providers/`、`support/`。
+
+### 探测设备占空比缓存按设备隔离（2026-06-15）
+
+#### 问题
+- `ASR_provider/src/buffer_detect.cpp` 原先把硬件 burst 检测结果保存为 `~/.config/vinput/pa_buffer.json` 中的单个 `buffer_bytes`。
+- 多个 PulseAudio 录音 source 共用该值，导致一台设备的占空比/缓冲大小会错误套用到另一台设备。
+
+#### 已改动
+- `ASR_provider/src/buffer_detect.cpp` 现在通过 `pactl get-default-source` 获取当前默认 source id，并按 source id 读写缓存。
+- `pa_buffer.json` 新格式为 `{"devices":{"<source-id>":{"buffer_bytes":64000}}}`；旧格式 `{"buffer_bytes":64000}` 会在首次读取时迁移到当前 source。
+- 新增测试环境变量：`VINPUT_PA_BUFFER_CONFIG` 指向临时缓存文件，`VINPUT_PA_SOURCE_ID` 覆盖 source id，供自动化测试避免访问真实 PulseAudio 设备。
+- 新增 `tests/test_buffer_detect_cache.cpp`，覆盖旧格式迁移和两台设备缓存互不覆盖。
+- 更新 `ASR_provider/WhyThisArchWork.md` 与 `tests/README.md` 记录 per-device cache 边界和验证方式。
+
+#### 验证
+- GitNexus impact：`loadOrDetectBufferBytes` 风险 LOW，直接影响 `AudioCapture` 缓冲分配；`detectHardwareBurstBytes` 风险 LOW，通过 `loadOrDetectBufferBytes` 间接影响同一录音流程。
+- `ninja -C build`：成功。
+- `meson test -C build`：3/3 通过。

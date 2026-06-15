@@ -1,107 +1,96 @@
-# Vinput 语音输入插件设计参考
+# Vinput Voice Input Design
 
-## 架构设计
+## Current Architecture
 
-```
-┌─────────────────────────────────────────┐
-│              fcitx5 Server               │
-│                                          │
-│  ┌────────────────────────────────────┐  │
-│  │     adapter/ (Module Addon)        │  │
-│  │  - 注册到 fcitx5 框架              │  │
-│  │  - 监听触发键                       │  │
-│  │  - 调用 ASR 后端                    │  │
-│  │  - 向 InputContext 提交文本         │  │
-│  │  - 显示语音状态 (preedit/aux)      │  │
-│  └────────────┬───────────────────────┘  │
-│               │                          │
-└───────────────┼──────────────────────────┘
-                │
-  ┌─────────────┴──────────────────────────┐
-  │         ASR_provider/                   │
-  │  - 音频采集 (PulseAudio/PipeWire/ALSA)  │
-  │  - 音频流式传输                         │
-  │  - ASR 后端接口 (OpenAI, Azure, ...    │
-  │  - 本地引擎 (Whisper, Vosk, ...)       │
-  └─────────────────────────────────────────┘
-```
+```text
+fcitx5
+  |
+  v
+adapter/VinputAddon
+  |-- key lifecycle: CapsLock press/release and switch mode
+  |-- provider/denoiser selection and notifications
+  |-- AudioCapture lifecycle
+  |-- IAsrProvider lifecycle
+  `-- OutputHandler lifecycle
 
-## Adapter 模块设计要点
+ASR_provider/AudioCapture
+  |-- PulseAudio capture
+  |-- hardware buffer detection
+  |-- ebur128 normalization
+  |-- denoise and VAD trim
+  `-- samples + wavPath
 
-### 1. Addon 类型
+ASR_provider/IAsrProvider
+  |-- transcribe(samples, wavPath)
+  `-- onResult(text, isFinal) / onError(error)
 
-使用 **Module** 类型 (Category=Module)，不定义 InputMethodEngine。
-
-### 2. 事件处理
-
-在 **PreInputMethod** 阶段监听键事件：
-- 拦截触发键 (如 Ctrl+Alt+V)
-- 切换语音输入开/关状态
-- 在语音输入激活期间，可选择拦截或透传其他键
-
-### 3. 文本提交
-
-通过 InputContext 的 `commitString()` 方法提交识别结果：
-
-```cpp
-ic->commitString(recognizedText);
-ic->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
+adapter/OutputHandler
+  |-- self-pipe thread handoff
+  |-- DesktopStrategy focus switch when supported
+  `-- fcitx InputContext::commitString(text)
 ```
 
-### 4. UI 反馈
+## Module Boundaries
 
-使用 InputPanel 提供可视化反馈：
+`adapter/` owns fcitx5 integration. It listens to keyboard events, starts and stops recording, chooses ASR providers and denoisers, shows notifications, and commits text through fcitx5.
 
-```cpp
-auto &inputPanel = ic->inputPanel();
-// 语音输入状态提示
-inputPanel.setAuxUp(fcitx::Text("🎤 Listening..."));
-// 或使用 client preedit 显示部分识别结果
-inputPanel.setClientPreedit(fcitx::Text(partialText));
+`ASR_provider/` owns audio capture, audio preprocessing, provider abstraction, provider registration, and ASR protocol implementations. It does not know about fcitx5 input contexts or desktop focus.
+
+`OutputHandler` owns the ASR result to text commit boundary. It accepts text from worker threads, returns to the fcitx event loop through a self-pipe, optionally switches focus through `DesktopStrategy`, and commits to the currently usable input context.
+
+`DesktopStrategy` owns compositor-specific focus commands. Unsupported desktops use `NoopStrategy`, which disables focus switching and falls back to direct commit.
+
+## Input Flow
+
+```text
+CapsLock press
+  -> VinputAddon stores timing and input context metadata
+  -> after activation delay, VinputAddon creates provider and AudioCapture
+  -> OutputHandler captures focused desktop window
+  -> AudioCapture records and preprocesses audio
+
+CapsLock release
+  -> AudioCapture::stop() joins the capture thread
+  -> recorded callback calls IAsrProvider::transcribe(samples, wavPath)
+  -> provider calls onResult/onError
+  -> OutputHandler::submit(text)
+  -> commitString(text)
+  -> VinputAddon restores CapsLock state through uinput
 ```
 
-注意：语音输入 addon 不应设置自己的 UI addon，应使用 Fcitx 内建 UI。
+## Switch Flow
 
-### 5. 状态管理
+`Ctrl+CapsLock` enters switch mode without starting audio capture. Horizontal keys switch ASR providers. Vertical keys switch denoisers. Selections are persisted to the existing fcitx config or `~/.config/vinput/audio.json`.
 
-使用 InputContextProperty 为每个输入上下文维护独立状态：
+## Failure Modes
 
-```cpp
-struct VoiceInputState {
-    bool recording = false;
-    std::string partialResult;
-    std::string finalResult;
-    // ASR session reference
-};
+| Area | Failure | Handling |
+|------|---------|----------|
+| AudioCapture | PulseAudio open/read failure | error/status logging; no provider call if no samples |
+| AudioCapture | missing deepfilter binary | denoiser path reports failure and leaves capture flow controlled by `AudioCapture` |
+| Provider | missing API key or model binary | provider calls `onError` or logs provider-specific failure |
+| OutputHandler | unsupported compositor | `NoopStrategy` disables focus switching and commits directly |
+| OutputHandler | focus switch timeout | commits anyway and attempts focus restore |
+| uinput | `/dev/uinput` unavailable | logs failure; voice input can still work but CapsLock restore is unavailable |
+
+## Verification
+
+Automated tests cover contracts that do not require desktop, microphone, model files, or cloud keys:
+
+```bash
+meson test -C build
 ```
 
-## 关键 API 用到的头文件
+Manual tools in `tools/` cover hardware and audio integration:
 
-```cpp
-#include <fcitx/addonfactory.h>
-#include <fcitx/addoninstance.h>
-#include <fcitx/addonmanager.h>
-#include <fcitx/instance.h>
-#include <fcitx/inputcontext.h>
-#include <fcitx/inputcontextmanager.h>
-#include <fcitx/inputmethodentry.h>
-#include <fcitx/inputpanel.h>
-#include <fcitx/configuration.h>
-#include <fcitx-utils/key.h>
-#include <fcitx-utils/log.h>
+```bash
+./build/tools/test_audio_file input.wav output.wav none
+./build/tools/test_audio_pipeline output.wav 3 none
 ```
 
-## 编译依赖
+Full integration requires installing the addon and restarting fcitx5:
 
-```cmake
-find_package(Fcitx5Core REQUIRED)
-target_link_libraries(vinput PRIVATE Fcitx5::Core)
+```bash
+sudo meson install -C build
+fcitx5 -r
 ```
-
-## 已有参考
-
-目前 fcitx5 生态中尚无官方的语音输入 addon。以下可以参考的类似实现：
-
-- **fcitx5-module-cloudpinyin** (云拼音): 展示了如何调用外部 API 获取 text -> 候选词的转换
-- **fcitx5-module-clipboard**: 展示 Module 类型 addon 的完整实现
-- **fcitx5-module-quickphrase**: 展示 PreInputMethod 阶段事件处理 + InputContextProperty 使用

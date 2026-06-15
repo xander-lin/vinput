@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <vector>
 #include <string>
 #include <sys/stat.h>
@@ -18,7 +19,15 @@ using Clock = std::chrono::steady_clock;
 
 namespace vinput {
 
+struct BufferCacheEntry {
+    std::string sourceId;
+    size_t bufferBytes;
+};
+
 static std::string configPath() {
+    const char *overridePath = getenv("VINPUT_PA_BUFFER_CONFIG");
+    if (overridePath && *overridePath) return overridePath;
+
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
     std::string dir = std::string(home) + "/.config/vinput";
@@ -26,35 +35,135 @@ static std::string configPath() {
     return dir + "/pa_buffer.json";
 }
 
-static size_t loadFromConfig() {
-    std::ifstream f(configPath());
-    if (!f.is_open()) return 0;
+static std::string jsonEscape(const std::string &s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+        case '\\': out += "\\\\"; break;
+        case '"': out += "\\\""; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out += c; break;
+        }
+    }
+    return out;
+}
 
-    std::string content((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
-    f.close();
-
-    auto pos = content.find("\"buffer_bytes\"");
+static size_t parseBufferBytesAt(const std::string &content, size_t pos) {
+    pos = content.find("\"buffer_bytes\"", pos);
     if (pos == std::string::npos) return 0;
     pos = content.find(':', pos);
     if (pos == std::string::npos) return 0;
     while (++pos < content.size() && (content[pos] == ' ' || content[pos] == '\t' || content[pos] == '\n')) {}
     if (pos >= content.size()) return 0;
 
-    size_t val = (size_t)std::stoul(content.substr(pos));
-    if (val < 4096 || val > 1048576) return 0;  // invalid range
-    return val;
+    try {
+        size_t val = (size_t)std::stoul(content.substr(pos));
+        if (val < 4096 || val > 1048576) return 0;  // invalid range
+        return val;
+    } catch (...) {
+        return 0;
+    }
 }
 
-static void saveToConfig(size_t bytes) {
+static std::string readTextFile(const std::string &path) {
+    std::ifstream f(path);
+    if (!f.is_open()) return "";
+
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    return content;
+}
+
+static std::vector<BufferCacheEntry> parseDeviceEntries(const std::string &content) {
+    std::vector<BufferCacheEntry> entries;
+    auto devicesPos = content.find("\"devices\"");
+    if (devicesPos == std::string::npos) return entries;
+
+    auto pos = content.find('{', devicesPos);
+    if (pos == std::string::npos) return entries;
+    ++pos;
+
+    while (pos < content.size()) {
+        pos = content.find('"', pos);
+        if (pos == std::string::npos) break;
+        auto end = content.find('"', pos + 1);
+        if (end == std::string::npos) break;
+
+        std::string sourceId = content.substr(pos + 1, end - pos - 1);
+        size_t value = parseBufferBytesAt(content, end);
+        if (value > 0) entries.push_back({sourceId, value});
+
+        pos = content.find('}', end);
+        if (pos == std::string::npos) break;
+        ++pos;
+    }
+    return entries;
+}
+
+static std::string defaultSourceId() {
+    const char *overrideId = getenv("VINPUT_PA_SOURCE_ID");
+    if (overrideId && *overrideId) return overrideId;
+
+    FILE *pipe = popen("pactl get-default-source 2>/dev/null", "r");
+    if (!pipe) return "default";
+
+    char buf[256];
+    std::string source;
+    if (fgets(buf, sizeof(buf), pipe)) source = buf;
+    pclose(pipe);
+
+    while (!source.empty() && (source.back() == '\n' || source.back() == '\r')) {
+        source.pop_back();
+    }
+    return source.empty() ? "default" : source;
+}
+
+static size_t loadFromConfig(const std::string &sourceId, bool *usedLegacy = nullptr) {
+    if (usedLegacy) *usedLegacy = false;
+
+    std::string content = readTextFile(configPath());
+    if (content.empty()) return 0;
+
+    for (const auto &entry : parseDeviceEntries(content)) {
+        if (entry.sourceId == sourceId) return entry.bufferBytes;
+    }
+
+    // Migrate the old single-device cache only when no per-device section exists.
+    if (content.find("\"devices\"") == std::string::npos) {
+        size_t legacy = parseBufferBytesAt(content, 0);
+        if (legacy > 0 && usedLegacy) *usedLegacy = true;
+        return legacy;
+    }
+    return 0;
+}
+
+static void saveToConfig(size_t bytes, const std::string &sourceId) {
+    std::map<std::string, size_t> devices;
+    for (const auto &entry : parseDeviceEntries(readTextFile(configPath()))) {
+        devices[entry.sourceId] = entry.bufferBytes;
+    }
+    devices[sourceId] = bytes;
+
     std::ofstream f(configPath());
     if (!f.is_open()) {
         fprintf(stderr, "Vinput: failed to write %s\n", configPath().c_str());
         return;
     }
-    f << "{\"buffer_bytes\": " << bytes << "}\n";
+    f << "{\n"
+      << "  \"devices\": {\n";
+    for (auto it = devices.begin(); it != devices.end(); ++it) {
+        f << "    \"" << jsonEscape(it->first) << "\": {\"buffer_bytes\": " << it->second << "}";
+        if (std::next(it) != devices.end()) f << ",";
+        f << "\n";
+    }
+    f << "  }\n"
+      << "}\n";
     f.close();
-    fprintf(stderr, "Vinput: saved buffer=%zu to %s\n", bytes, configPath().c_str());
+    fprintf(stderr, "Vinput: saved buffer=%zu for source=%s to %s\n",
+            bytes, sourceId.c_str(), configPath().c_str());
 }
 
 size_t detectHardwareBurstBytes() {
@@ -183,16 +292,19 @@ size_t detectHardwareBurstBytes() {
 }
 
 size_t loadOrDetectBufferBytes(std::function<void(const std::string &)> onStatus) {
-    size_t cached = loadFromConfig();
+    std::string sourceId = defaultSourceId();
+    bool usedLegacy = false;
+    size_t cached = loadFromConfig(sourceId, &usedLegacy);
     if (cached > 0) {
-        fprintf(stderr, "Vinput: using cached buffer=%zu bytes (%.1f s)\n",
-                cached, cached / 32000.0);
+        if (usedLegacy) saveToConfig(cached, sourceId);
+        fprintf(stderr, "Vinput: using cached buffer=%zu bytes (%.1f s) for source=%s\n",
+                cached, cached / 32000.0, sourceId.c_str());
         return cached;
     }
 
     if (onStatus) onStatus("Detecting hardware buffer period...");
     size_t detected = detectHardwareBurstBytes();
-    saveToConfig(detected);
+    saveToConfig(detected, sourceId);
     if (onStatus) onStatus("");
     return detected;
 }

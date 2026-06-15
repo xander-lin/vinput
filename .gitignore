@@ -1,4 +1,10 @@
+build/
 builddir/
+.venv/
+/pkg/
+/src/
+*.pkg.tar.*
 compile_commands.json
+config/*.json
 log.txt
 out/

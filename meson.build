@@ -5,6 +5,7 @@ project('fcitx5-vinput', 'cpp',
 add_project_arguments('-Wno-variadic-macros', language: 'cpp')
 
 subdir('ASR_provider/src')
+subdir('tests')
 subdir('tools')
 subdir('adapter')
 

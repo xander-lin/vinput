@@ -2,24 +2,39 @@
 
 pkgname=fcitx5-vinput-git
 _pkgname=fcitx5-vinput
-pkgver=0.1.0.r124.9870b71
+pkgver=0.1.0.r125.d40259f
 pkgrel=1
 pkgdesc="Voice input addon for fcitx5: push-to-talk ASR via CapsLock"
 arch=('x86_64')
 url="https://github.com/xander-lin/vinput"
 license=('MIT')
 depends=('fcitx5' 'libebur128' 'libpulse' 'curl' 'speexdsp' 'libsoxr')
-makedepends=('git' 'meson' 'ninja')
+makedepends=('meson' 'ninja')
 provides=("$_pkgname")
 conflicts=("$_pkgname")
 install=PKGBUILD.install
-# Primary: Gitee (fast in China). Fallback: change to github.com/xander-lin/vinput
-source=("$_pkgname::git+https://gitee.com/xander-lin/vinput.git")
-sha256sums=('SKIP')
+source=()
+sha256sums=()
 
 pkgver() {
-    cd "$_pkgname"
-    git describe --long --tags 2>/dev/null || printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+    cd "$startdir"
+    printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD 2>/dev/null || printf 0)" "$(git rev-parse --short HEAD 2>/dev/null || printf local)"
+}
+
+prepare() {
+    rm -rf "$srcdir/$_pkgname"
+    mkdir -p "$srcdir/$_pkgname"
+    cp -a \
+        "$startdir/ASR_provider" \
+        "$startdir/adapter" \
+        "$startdir/config" \
+        "$startdir/docs" \
+        "$startdir/tests" \
+        "$startdir/tools" \
+        "$startdir/meson.build" \
+        "$startdir/README.md" \
+        "$startdir/LICENSE" \
+        "$srcdir/$_pkgname/"
 }
 
 build() {
@@ -33,7 +48,7 @@ package() {
     DESTDIR="$pkgdir" meson install -C build
     install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
-    for f in config/*.json; do
+    for f in config/*.json.example; do
         install -Dm644 "$f" "$pkgdir/usr/share/doc/$_pkgname/$f"
     done
 }

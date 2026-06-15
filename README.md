@@ -26,7 +26,7 @@ Voice input addon for [fcitx5](https://github.com/fcitx/fcitx5). Push-to-talk sp
 
 ```bash
 # AUR (Arch Linux)
-yay -S fcitx5-vinput-git
+paru -S fcitx5-vinput-git
 
 # Manual build
 meson setup build --prefix=/usr
@@ -39,14 +39,15 @@ sudo meson install -C build
 ```bash
 mkdir -p ~/.config/vinput
 
-# Doubao
-echo '{"api_key":"xxx","resource_id":"volc.seedasr.auc"}' > ~/.config/vinput/doubao.json
+# Copy tracked examples, then edit local files under ~/.config/vinput/
+cp config/doubao.json.example ~/.config/vinput/doubao.json
+cp config/qwen.json.example ~/.config/vinput/qwen.json
+cp config/output.json.example ~/.config/vinput/output.json
+cp config/audio.json.example ~/.config/vinput/audio.json
+cp config/vinput.json.example ~/.config/vinput/vinput.json
+cp config/advanced.json.example ~/.config/vinput/advanced.json
 
-# Qwen
-echo '{"api_key":"sk-xxx"}' > ~/.config/vinput/qwen.json
-
-# Desktop environment (for window focus switching)
-echo '{"desktop":"niri"}' > ~/.config/vinput/output.json
+# Doubao and Qwen need API keys before use
 ```
 
 ### 3. Restart fcitx5
@@ -125,21 +126,23 @@ rm *.tar.bz2
 
 All config in `~/.config/vinput/`. See man page: `man vinput`
 
+Tracked files under `config/*.json.example` are examples only. Runtime `*.json` files are ignored by Git and should stay under `~/.config/vinput/`.
+
 ### User-facing (must configure)
 
 | File | Purpose | Example |
 |------|---------|---------|
-| `doubao.json` | Doubao API credentials | `{"api_key":"...","resource_id":"..."}` |
-| `qwen.json` | Qwen API key | `{"api_key":"sk-..."}` |
-| `output.json` | Desktop environment | `{"desktop":"niri"}` |
-| `vinput.json` | Interaction tuning | `{"activation_msec":300}` |
+| `doubao.json` | Doubao API credentials | copy from `config/doubao.json.example` |
+| `qwen.json` | Qwen API key | copy from `config/qwen.json.example` |
+| `output.json` | Desktop environment | copy from `config/output.json.example` |
+| `vinput.json` | Interaction tuning | copy from `config/vinput.json.example` |
 
 ### Advanced (optional, all defaults in code)
 
 | File | Purpose |
 |------|---------|
-| `advanced.json` | All tunables: model paths, thread counts, timeouts, audio params |
-| `audio.json` | Denoiser: `"none"` \| `"speexdsp"` \| `"deepfilter"` |
+| `advanced.json` | All tunables: model paths, thread counts, timeouts, audio params, copy from `config/advanced.json.example` |
+| `audio.json` | Denoiser: `"none"` \| `"speexdsp"` \| `"deepfilter"`, copy from `config/audio.json.example` |
 
 ## Dependencies
 
