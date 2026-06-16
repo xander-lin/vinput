@@ -2,6 +2,67 @@
 
 ## 2026-06-16 (续)
 
+### 独立 uinput CapsLock 测试工具
+
+#### 动机
+- 用户要求不要每次都重建/安装整个 `adapter` 插件，只验证 `uinput` 路径本身。
+
+#### 已新增
+- `tools/test_uinput_caps.cpp`：独立创建 `/dev/uinput` 虚拟键盘，只发送 CapsLock press/release。
+- `tools/meson.build`：新增 `test_uinput_caps` 可执行目标。
+
+#### 用法
+- 构建：`meson setup build --reconfigure && ninja -C build tools/test_uinput_caps`
+- 运行：`build/tools/test_uinput_caps --taps 1 --settle-ms 800`
+
+#### 当前观测
+- 在 Hyprland 会话中运行后，Hyprland 里新增的 `vinput-uinput-caps-test` 键盘存在，但 `hyprctl devices -j` 显示所有键盘 `capsLock=false`。
+- 这说明独立 `uinput` 虚拟键盘已创建并发出事件，但当前事件序列没有把 Hyprland 的 CapsLock 锁定状态置为 on。
+
+#### 后续方向
+- 优先在 `tools/test_uinput_caps.cpp` 上继续隔离实验，调整事件序列后再回写到 `adapter/src/vinput.cpp`。
+- 不要回到整插件安装验证流程，避免把构建/安装成本混入单变量测试。
+- 更长期的正确方向是调用 Hyprland API 做真正意义上的 compositor 内部控制：在 Hyprland 内部读写 CapsLock/XKB lock state，而不是通过另一个虚拟键盘间接影响。
+- 当前阶段不实现 Hyprland 内部控制；本次以交互调整方案收尾。
+
+### Hyprland CapsLock 停止录音交互调整
+
+#### 问题
+- Hyprland 下 CapsLock lock state 由 compositor/XKB 维护，`uinput` 另建虚拟键盘只能影响 LED，不能可靠恢复实际大小写锁定状态。
+- 用户不采用键盘代理、Hyprland 插件、禁用 CapsLock、换触发键等方案。
+
+#### 方案
+- `adapter/src/vinput.cpp` 新增 `VinputAddon::isHyprlandSession()`，通过 `HYPRLAND_INSTANCE_SIGNATURE` 判断 Hyprland。
+- 非 Hyprland 行为保持不变：长按 CapsLock 激活录音，松开停止录音并通过 `revertCapsLock()` 恢复 CapsLock。
+- Hyprland 行为改为：长按 CapsLock 激活录音，第一次松开不停止录音；录音中再次按下 CapsLock 才停止录音，并调用 `onDeactivate(false)`，不再尝试恢复 CapsLock。
+
+#### 验证
+- GitNexus impact：`onKeyEvent` 风险 LOW，`onDeactivate` 风险 LOW；影响范围为 CapsLock 录音状态机。
+- `ninja -C build`：成功。
+- `meson test -C build`：4/4 通过。
+
+### Hyprland CapsLock 还原尝试（已被交互调整取代）
+
+#### 现象
+- 同一套 uinput CapsLock 还原逻辑在 niri 上可正常工作，但在 Hyprland 上 CapsLock 不会恢复。
+
+#### 根因
+- `adapter/src/vinput.cpp` 的 `VinputAddon::revertCapsLock()` 原先把虚拟 CapsLock press 与 release 写入同一个 `SYN_REPORT` 同步帧。
+- niri 能接受这种事件序列并切换锁定状态；Hyprland/libinput 路径下同帧 press+release 不可靠，可能被折叠或不触发 CapsLock 锁定状态第二次切换。
+
+#### 尝试
+- `VinputAddon::revertCapsLock()` 改为：发送 `KEY_CAPSLOCK press` → `SYN_REPORT` → `KEY_CAPSLOCK release` → `SYN_REPORT`。
+- 修改范围仅限 `adapter/src/vinput.cpp`，不改变按键状态机、录音生命周期、桌面策略或输出提交逻辑。
+
+#### 后续结论
+- 该尝试在 Hyprland 下仍不能可靠恢复实际 CapsLock lock state，最终采用上方“再按一次停止录音”的 Hyprland 专用交互调整。
+
+#### 验证
+- GitNexus impact：`revertCapsLock` 风险 LOW；直接调用者为 `onKeyEvent()` 和 `onDeactivate()`，影响 CapsLock 恢复流程。
+- `ninja -C build`：成功。
+- `meson test -C build`：4/4 通过。
+- `detect_changes(scope=all)`：变更符号为 `VinputAddon` 与 `VinputAddon::revertCapsLock()`；影响流程符合预期。
+
 ### 桌面环境自动检测（替代 output.json 配置）
 
 #### 动机

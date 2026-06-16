@@ -9,3 +9,7 @@ test_audio_file = executable('test_audio_file',
   'test_audio_file.cpp',
   dependencies: [asr_provider_dep],
   install: false)
+
+test_uinput_caps = executable('test_uinput_caps',
+  'test_uinput_caps.cpp',
+  install: false)

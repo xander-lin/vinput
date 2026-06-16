@@ -113,6 +113,10 @@ private:
     int notificationTimeout_ = 2000;         // from vinput.json: notification_timeout
     int debounceCount_ = 2;                   // from vinput.json: debounce_count
 
+    static bool isHyprlandSession() {
+        return getenv("HYPRLAND_INSTANCE_SIGNATURE") != nullptr;
+    }
+
     // 创建常驻 uinput 虚拟键盘设备, 用于还原 CapsLock
     void initUinput() {
         uinputFd_ = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
@@ -142,6 +146,14 @@ private:
         ev.code = KEY_CAPSLOCK;
         ev.value = 1;
         (void)!write(uinputFd_, &ev, sizeof(ev));
+        ev.type = EV_SYN;
+        ev.code = SYN_REPORT;
+        ev.value = 0;
+        (void)!write(uinputFd_, &ev, sizeof(ev));
+
+        ev = {};
+        ev.type = EV_KEY;
+        ev.code = KEY_CAPSLOCK;
         ev.value = 0;
         (void)!write(uinputFd_, &ev, sizeof(ev));
         ev.type = EV_SYN;
@@ -286,7 +298,9 @@ private:
                     return;
                 }
                 if (active_) {
-                    onDeactivate();
+                    if (!isHyprlandSession()) {
+                        onDeactivate();
+                    }
                 } else if (switchActive_) {
                     switchActive_ = false;
                     revertDebounce_ = debounceCount_;
@@ -304,6 +318,11 @@ private:
         if (capsLock) {
             if (revertDebounce_ > 0) {
                 revertDebounce_--;
+                return;
+            }
+            if (active_ && isHyprlandSession()) {
+                onDeactivate(false);
+                keyEvent.filterAndAccept();
                 return;
             }
             if (timer_ || active_ || switchActive_) return;
@@ -491,7 +510,7 @@ private:
     }
 
     // 松键后结束
-    void onDeactivate() {
+    void onDeactivate(bool restoreCapsLock = true) {
         active_ = false;
         tStop_ = std::chrono::steady_clock::now();
         auto recMs = std::chrono::duration_cast<std::chrono::milliseconds>(tStop_ - tActivate_).count();
@@ -518,9 +537,11 @@ private:
         }
 
         playSound("deactivate");  // 结束音: 低音
-        // 松键后还原 CapsLock (按下时硬件层已切换, 现在补一个假按键还原)
-        revertDebounce_ = debounceCount_;
-        revertCapsLock();
+        if (restoreCapsLock) {
+            // 松键后还原 CapsLock (按下时硬件层已切换, 现在补一个假按键还原)
+            revertDebounce_ = debounceCount_;
+            revertCapsLock();
+        }
     }
 
     // ASR 错误回调
