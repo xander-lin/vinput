@@ -1,5 +1,16 @@
 # Vinput 开发发现记录
 
+## 2026-06-16
+
+### 安装/更新配置文件策略
+
+- 用户要求语义：配置文件不存在时安装，存在时更新不能覆盖用户配置。
+- Arch/pacman 正确实现路径不是写入 `~/.config/vinput/`：包安装脚本以 root 运行，无法可靠判断目标普通用户 home。
+- 当前方案：`PKGBUILD` 把 `config/*.json.example` 安装为 `/etc/vinput/*.json`，并在 `backup=(...)` 中声明这些文件；pacman 首次安装会创建它们，升级时会保留本地修改并按 pacman 规则生成 `.pacnew`。
+- 运行时读取顺序：`ASR_provider/src/vinput_config.h` 的 `readConfigFile()` 先读 `~/.config/vinput/<name>`；用户文件缺失且 `/etc/vinput/<name>` 存在时，会自动复制到 `~/.config/vinput/<name>` 后读取；已有用户文件不覆盖。`adapter/src/output_handler.cpp` 的 `output.json` 读取也走同一规则。
+- `PKGBUILD` 构建参数使用 `meson setup ... --buildtype=plain -Dcpp_args='-O2 -march=native'`，按当前机器启用 O2 和 native CPU 优化。
+- `PKGBUILD.install` 中本地模型需自行下载的提示使用 ANSI 红字输出。
+
 ## 2026-06-04
 
 ### 录音尾部丢失：最终修复（动态缓冲区 + 自动检测）

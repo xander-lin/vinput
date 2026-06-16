@@ -1,5 +1,6 @@
 #include "output_handler.h"
 #include "desktop_strategy.h"
+#include "vinput_config.h"
 
 #include <fcitx/inputcontextmanager.h>
 #include <fcitx-utils/log.h>
@@ -8,26 +9,11 @@
 #include <unistd.h>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 
 namespace vinput {
 
 static std::string readDesktopConfig() {
-    const char *home = getenv("HOME");
-    if (!home) return "none";
-    std::string path = std::string(home) + "/.config/vinput/output.json";
-    std::ifstream f(path);
-    if (!f) return "none";
-    std::string json((std::istreambuf_iterator<char>(f)),
-                      std::istreambuf_iterator<char>());
-    auto pos = json.find("\"desktop\"");
-    if (pos == std::string::npos) return "none";
-    pos = json.find('"', json.find(':', pos) + 1);
-    if (pos == std::string::npos) return "none";
-    pos++;
-    auto end = json.find('"', pos);
-    if (end == std::string::npos) return "none";
-    return json.substr(pos, end - pos);
+    return jsonStr(readConfigFile("output.json"), "desktop", "none");
 }
 
 OutputHandler::OutputHandler(fcitx::Instance *instance) : instance_(instance) {

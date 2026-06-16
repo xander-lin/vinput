@@ -1,12 +1,13 @@
 # Configuration Examples
 
-This directory stores example configuration files only. Runtime configuration lives in `~/.config/vinput/`.
+This directory stores example configuration files only. Packaged defaults are installed to `/etc/vinput/`; per-user overrides live in `~/.config/vinput/`.
 
 ## Boundary
 
 - Track `*.json.example` in Git.
 - Do not track `*.json` in this directory.
-- Real API keys, local paths, and user preferences belong in `~/.config/vinput/*.json`.
+- Real API keys, local paths, and user preferences belong in `/etc/vinput/*.json` or `~/.config/vinput/*.json`.
+- Runtime lookup order is `~/.config/vinput/*.json` first, then `/etc/vinput/*.json`; missing user files are copied from `/etc/vinput/` on first read.
 - `.gitignore` ignores `config/*.json` to reduce the chance of committing real credentials.
 
 ## Initial Setup

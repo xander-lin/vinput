@@ -49,7 +49,7 @@ Downstream targets should not duplicate these dependencies unless they directly 
 - Audio capture failures must remain in `AudioCapture` and surface through status/error logging or the recorded callback not firing.
 - Provider failures must call `onError` where possible and must not touch fcitx5 input contexts.
 - Desktop focus and text commit are adapter responsibilities and must not be added to provider code.
-- User configuration is loaded from `~/.config/vinput/*.json`; repository files under `config/*.json.example` are examples only.
+- Configuration is loaded from `~/.config/vinput/*.json` first, then packaged defaults under `/etc/vinput/*.json`. Missing user config files are copied from `/etc/vinput/` on first read and existing user files are not overwritten. Repository files under `config/*.json.example` are examples only.
 
 ## Verification
 

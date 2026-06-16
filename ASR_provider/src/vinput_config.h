@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -18,11 +19,42 @@ inline std::string configPath(const std::string &name) {
     return configDir() + "/" + name;
 }
 
-inline std::string readConfigFile(const std::string &name) {
-    std::ifstream f(configPath(name));
+inline std::string systemConfigDir() {
+    return "/etc/vinput";
+}
+
+inline std::string readFileIfExists(const std::string &path) {
+    std::ifstream f(path);
     if (!f) return "";
     return std::string((std::istreambuf_iterator<char>(f)),
                        std::istreambuf_iterator<char>());
+}
+
+inline bool fileExists(const std::string &path) {
+    return std::filesystem::exists(path);
+}
+
+inline void copyFileIfMissing(const std::string &src, const std::string &dst) {
+    if (!fileExists(src) || fileExists(dst)) return;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(dst).parent_path(), ec);
+    if (ec) return;
+    std::filesystem::copy_file(src, dst, std::filesystem::copy_options::none, ec);
+}
+
+inline std::string readConfigFileFromDirs(const std::string &name,
+                                          const std::string &userDir,
+                                          const std::string &fallbackDir) {
+    auto userPath = userDir + "/" + name;
+    if (fileExists(userPath)) return readFileIfExists(userPath);
+
+    auto fallbackPath = fallbackDir + "/" + name;
+    copyFileIfMissing(fallbackPath, userPath);
+    return readFileIfExists(userPath);
+}
+
+inline std::string readConfigFile(const std::string &name) {
+    return readConfigFileFromDirs(name, configDir(), systemConfigDir());
 }
 
 inline std::string jsonStr(const std::string &json, const std::string &key,

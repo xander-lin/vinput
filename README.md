@@ -36,6 +36,10 @@ sudo meson install -C build
 
 ### 2. Configure (cloud ASR)
 
+The package installs default config files to `/etc/vinput/`. Existing edited files under `/etc/vinput/` are preserved by pacman on upgrade.
+
+Per-user files under `~/.config/vinput/` override `/etc/vinput/`. Missing per-user config files are created from `/etc/vinput/` when Vinput first reads them.
+
 ```bash
 mkdir -p ~/.config/vinput
 
@@ -124,7 +128,7 @@ rm *.tar.bz2
 
 ## Configuration
 
-All config in `~/.config/vinput/`. See man page: `man vinput`
+Config is loaded from `~/.config/vinput/` first, then `/etc/vinput/`. If a user config file is missing and the packaged `/etc/vinput/` file exists, Vinput copies it to `~/.config/vinput/` without overwriting existing files. See man page: `man vinput`
 
 Tracked files under `config/*.json.example` are examples only. Runtime `*.json` files are ignored by Git and should stay under `~/.config/vinput/`.
 

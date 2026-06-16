@@ -10,6 +10,11 @@ test_buffer_detect_cache = executable('test_buffer_detect_cache',
   'test_buffer_detect_cache.cpp',
   dependencies: [asr_provider_dep])
 
+test_config_fallback = executable('test_config_fallback',
+  'test_config_fallback.cpp',
+  dependencies: [asr_provider_dep])
+
 test('asr_registry', test_asr_registry)
 test('audio_capture_file', test_audio_capture_file)
 test('buffer_detect_cache', test_buffer_detect_cache)
+test('config_fallback', test_config_fallback)
