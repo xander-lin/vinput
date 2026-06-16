@@ -1,6 +1,7 @@
 #include "desktop_strategy.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <spawn.h>
 #include <unistd.h>
@@ -65,6 +66,23 @@ void HyprlandStrategy::focusWindow(const std::string &id) {
 std::unique_ptr<DesktopStrategy> DesktopStrategy::create(const std::string &desktop) {
     if (desktop == "niri")     return std::make_unique<NiriStrategy>();
     if (desktop == "hyprland") return std::make_unique<HyprlandStrategy>();
+    return std::make_unique<NoopStrategy>();
+}
+
+std::unique_ptr<DesktopStrategy> DesktopStrategy::autoDetect() {
+    if (getenv("HYPRLAND_INSTANCE_SIGNATURE"))
+        return std::make_unique<HyprlandStrategy>();
+    if (getenv("NIRI_SOCKET"))
+        return std::make_unique<NiriStrategy>();
+
+    const char *xdg = getenv("XDG_CURRENT_DESKTOP");
+    if (!xdg) xdg = getenv("XDG_SESSION_DESKTOP");
+    if (xdg) {
+        std::string d(xdg);
+        if (d == "Hyprland" || d == "hyprland") return std::make_unique<HyprlandStrategy>();
+        if (d == "niri" || d == "Niri")          return std::make_unique<NiriStrategy>();
+    }
+
     return std::make_unique<NoopStrategy>();
 }
 

@@ -19,7 +19,6 @@ backup=(
     'etc/vinput/advanced.json'
     'etc/vinput/audio.json'
     'etc/vinput/doubao.json'
-    'etc/vinput/output.json'
     'etc/vinput/qwen.json'
     'etc/vinput/vinput.json'
 )

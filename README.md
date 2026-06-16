@@ -46,7 +46,6 @@ mkdir -p ~/.config/vinput
 # Copy tracked examples, then edit local files under ~/.config/vinput/
 cp config/doubao.json.example ~/.config/vinput/doubao.json
 cp config/qwen.json.example ~/.config/vinput/qwen.json
-cp config/output.json.example ~/.config/vinput/output.json
 cp config/audio.json.example ~/.config/vinput/audio.json
 cp config/vinput.json.example ~/.config/vinput/vinput.json
 cp config/advanced.json.example ~/.config/vinput/advanced.json
@@ -138,7 +137,6 @@ Tracked files under `config/*.json.example` are examples only. Runtime `*.json` 
 |------|---------|---------|
 | `doubao.json` | Doubao API credentials | copy from `config/doubao.json.example` |
 | `qwen.json` | Qwen API key | copy from `config/qwen.json.example` |
-| `output.json` | Desktop environment | copy from `config/output.json.example` |
 | `vinput.json` | Interaction tuning | copy from `config/vinput.json.example` |
 
 ### Advanced (optional, all defaults in code)

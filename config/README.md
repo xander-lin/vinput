@@ -16,7 +16,6 @@ This directory stores example configuration files only. Packaged defaults are in
 mkdir -p ~/.config/vinput
 cp config/doubao.json.example ~/.config/vinput/doubao.json
 cp config/qwen.json.example ~/.config/vinput/qwen.json
-cp config/output.json.example ~/.config/vinput/output.json
 cp config/audio.json.example ~/.config/vinput/audio.json
 cp config/vinput.json.example ~/.config/vinput/vinput.json
 cp config/advanced.json.example ~/.config/vinput/advanced.json
@@ -30,7 +29,6 @@ After copying, edit the files under `~/.config/vinput/`. Do not put real keys in
 |---------|--------------|---------|
 | `doubao.json.example` | `~/.config/vinput/doubao.json` | Doubao API key and resource ID |
 | `qwen.json.example` | `~/.config/vinput/qwen.json` | Alibaba DashScope API key |
-| `output.json.example` | `~/.config/vinput/output.json` | Desktop strategy: `niri`, `hyprland`, `gnome`, or `none` |
 | `audio.json.example` | `~/.config/vinput/audio.json` | Active denoiser: `none`, `speexdsp`, or `deepfilter` |
 | `vinput.json.example` | `~/.config/vinput/vinput.json` | Activation delay, notifications, CapsLock debounce |
 | `advanced.json.example` | `~/.config/vinput/advanced.json` | Optional model paths, timeouts, thread counts, and audio tuning |

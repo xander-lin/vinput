@@ -12,15 +12,9 @@
 
 namespace vinput {
 
-static std::string readDesktopConfig() {
-    return jsonStr(readConfigFile("output.json"), "desktop", "none");
-}
-
 OutputHandler::OutputHandler(fcitx::Instance *instance) : instance_(instance) {
-    auto desktop = readDesktopConfig();
-    desktop_ = DesktopStrategy::create(desktop);
-    FCITX_INFO() << "Vinput OutputHandler: desktop=" << desktop_
-                 << " strategy=" << desktop_->name();
+    desktop_ = DesktopStrategy::autoDetect();
+    FCITX_INFO() << "Vinput OutputHandler: auto-detected strategy=" << desktop_->name();
 
     if (pipe(wakePipe_) != 0) {
         FCITX_ERROR() << "Vinput: OutputHandler pipe() failed";
@@ -55,6 +49,8 @@ void OutputHandler::setCaptureWindow(const std::string &winId) {
 }
 
 void OutputHandler::captureCurrentWindow() {
+    desktop_ = DesktopStrategy::autoDetect();
+    FCITX_INFO() << "Vinput [capture] detected desktop=" << desktop_->name();
     capturedWinId_ = desktop_->getFocusedWindowId();
 }
 

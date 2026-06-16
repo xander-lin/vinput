@@ -1,5 +1,39 @@
 # Vinput 开发发现记录
 
+## 2026-06-16 (续)
+
+### 桌面环境自动检测（替代 output.json 配置）
+
+#### 动机
+原先 `OutputHandler` 构造函数从 `~/.config/vinput/output.json` 的 `desktop` 字段读取桌面环境（`niri`/`hyprland`/`none`），需要用户手动配置。实际上 compositor 可以通过环境变量自动检测，无需用户干预。
+
+#### 方案
+- `DesktopStrategy` 新增 `static autoDetect()` 方法，通过环境变量检测当前 compositor：
+  1. `HYPRLAND_INSTANCE_SIGNATURE` → HyprlandStrategy
+  2. `NIRI_SOCKET` → NiriStrategy
+  3. `XDG_CURRENT_DESKTOP` / `XDG_SESSION_DESKTOP` 回退检测
+  4. 都不匹配 → NoopStrategy
+- `OutputHandler` 构造函数使用 `autoDetect()` 代替 `readDesktopConfig()`
+- `captureCurrentWindow()` 每次录音激活时重新调用 `autoDetect()`，确保检测最新状态
+- 删除 `readDesktopConfig()` 函数，不再读取 `output.json`
+- 删除 `config/output.json.example`，`PKGBUILD` 的 `backup` 数组移除 `output.json`
+
+#### 各文件变化
+- `adapter/src/desktop_strategy.h`：新增 `autoDetect()` 声明
+- `adapter/src/desktop_strategy.cpp`：实现 `autoDetect()`，添加 `<cstdlib>` 头文件
+- `adapter/src/output_handler.cpp`：删除 `readDesktopConfig()`，构造函数改用 `autoDetect()`，`captureCurrentWindow()` 每次重新检测
+- `config/output.json.example`：删除
+- `PKGBUILD`：`backup` 移除 `output.json`
+- `README.md`、`config/README.md`：移除 `output.json` 相关说明
+
+#### 性能影响
+- `getenv()` 调用开销可忽略（纳秒级），在录音激活时执行不影响音频流水线
+- 每次 `captureCurrentWindow()` 重新创建策略对象（`make_unique`），开销极小
+
+#### 验证
+- `ninja -C build`：成功
+- `meson test -C build`：4/4 通过
+
 ## 2026-06-16
 
 ### 安装/更新配置文件策略

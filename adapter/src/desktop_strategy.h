@@ -14,6 +14,7 @@ public:
     virtual const char *name() const = 0;
 
     static std::unique_ptr<DesktopStrategy> create(const std::string &desktop);
+    static std::unique_ptr<DesktopStrategy> autoDetect();
 };
 
 class NoopStrategy : public DesktopStrategy {
