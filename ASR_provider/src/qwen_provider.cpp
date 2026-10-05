@@ -1,5 +1,6 @@
 #include "qwen_provider.h"
 #include "qwen_json.h"
+#include "secret_store.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -90,12 +91,8 @@ std::string buildRequestBody(const QwenSettings &s, const std::string &dataUri) 
 } // namespace
 
 QwenAsrProvider::QwenAsrProvider() {
-    auto adv = advancedSection("qwen");
-    if (!adv.empty()) {
-        timeout_ = (long)jsonInt(adv, "timeout_sec", (int)timeout_);
-    }
     state_ = std::make_shared<WorkerState>();
-    worker_ = std::thread([state = state_] { workerLoop(state); });
+    worker_ = std::thread([this, state = state_] { workerLoop(state); });
 }
 
 QwenAsrProvider::~QwenAsrProvider() {
@@ -118,14 +115,15 @@ void QwenAsrProvider::setConfig(const std::string &key, const std::string &value
     if (key == "api_key") apiKeyOverride_ = value;
 }
 
-QwenSettings QwenAsrProvider::resolveSettings() const {
+QwenSettings QwenAsrProvider::resolveSettings() {
     QwenSettings s;
     s.model = kDefaultQwenModel;
     s.endpoint = kDefaultQwenEndpoint;
     s.requestStyle = "auto";
+    std::string fileKey;
     std::string json = readConfigFile("qwen.json");
     if (!json.empty()) {
-        s.apiKey = qjsonStringValue(json, "api_key");
+        fileKey = qjsonStringValue(json, "api_key");
         std::string v = qjsonStringValue(json, "model");
         if (!v.empty()) s.model = v;
         v = qjsonStringValue(json, "endpoint");
@@ -138,13 +136,15 @@ QwenSettings QwenAsrProvider::resolveSettings() const {
         s.keepDialect = qjsonRawValue(json, "keep_dialect") == "true";
         s.speakerDiarization =
             qjsonRawValue(json, "speaker_diarization") == "true";
+        timeout_ = jsonInt(json, "timeout_sec", (int)timeout_);
     }
-    if (!apiKeyOverride_.empty()) s.apiKey = apiKeyOverride_;
+    s.apiKey = resolveApiKeyLifecycle("qwen", "qwen.json", fileKey,
+                                      keyringCache_, apiKeyOverride_);
     return s;
 }
 
 void QwenAsrProvider::transcribe(std::vector<int16_t> samples, const std::string &wavPath) {
-    Task task{std::move(samples), wavPath, resolveSettings(), timeout_,
+    Task task{std::move(samples), wavPath, timeout_,
               std::make_shared<std::atomic_bool>(false), onResult_, onError_,
               diagnosticId_};
     {
@@ -176,8 +176,11 @@ void QwenAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
             {"recognition_id", std::to_string(task.diagnosticId)},
             {"wav_hash", hashDiagnosticValue(task.wavPath).substr(0, 16)}
         });
+        // Config (and the API key lifecycle) is resolved on the worker thread
+        // so secret-store calls never block the UI thread.
+        QwenSettings settings = resolveSettings();
         processRecording(std::move(task.samples), task.wavPath,
-                         task.settings, task.timeout,
+                         settings, task.timeout,
                          std::move(task.cancel), std::move(task.onResult),
                          std::move(task.onError), task.diagnosticId);
         {

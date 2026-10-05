@@ -13,10 +13,12 @@
 
 namespace vinput {
 
-// Resolved from doubao.json (+ setConfig overrides) at transcribe() time.
-// Re-read per request so model/feature switches need no restart.
+// Resolved from doubao.json (+ setConfig overrides) on the worker thread
+// before each request. Re-read per request so model/feature switches need no
+// restart. The API key follows the same import-into-secret-store lifecycle
+// as the Qwen provider (see secret_store.h).
 struct DoubaoSettings {
-    std::string apiKey;
+    std::string apiKey;    // resolved key (override > file > keyring)
     std::string resourceId;
     std::string modelName = "bigmodel";  // request.model_name
     bool enableItn = true;
@@ -35,7 +37,6 @@ private:
     struct Task {
         std::vector<int16_t> samples;
         std::string wavPath;
-        DoubaoSettings settings;
         int pollIntervalMsec;
         int maxPolls;
         long submitTimeout;
@@ -53,7 +54,7 @@ private:
         bool stopping = false;
     };
 
-    static void workerLoop(const std::shared_ptr<WorkerState> &state);
+    void workerLoop(const std::shared_ptr<WorkerState> &state);
     static void processRecording(std::vector<int16_t> samples,
                                  const std::string &wavPath,
                                  const DoubaoSettings &settings,
@@ -63,10 +64,11 @@ private:
                                   AsrResultCallback onR, AsrErrorCallback onE,
                                   uint64_t diagnosticId);
 
-    DoubaoSettings resolveSettings() const;
+    DoubaoSettings resolveSettings();
 
-    std::string apiKeyOverride_;     // set via setConfig; wins over doubao.json
+    std::string apiKeyOverride_;     // set via setConfig; wins over everything
     std::string resourceIdOverride_;
+    std::string keyringCache_;       // cached keyring lookup (worker thread only)
     int pollIntervalMsec_ = 800;
     int maxPolls_ = 75;
     long submitTimeout_ = 30;

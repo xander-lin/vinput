@@ -48,3 +48,36 @@
     swapped, nested same-name keys, escapes, braces inside strings).
   - When a passthrough silently yields "", log or test it — silent config
     drops look like "the cloud ignored my settings".
+
+## 3. JSON property removal needs comma/whitespace bookkeeping (found 2026-10)
+
+- **Mistake/context**: `qjsonRemoveTopLevelProperty` (used to strip `api_key`
+  after keyring import) initially removed only the key/value span, leaving
+  either a double comma (middle property) or a blank line (first property in
+  pretty-printed JSON) — the first variant produced invalid JSON.
+- **Root cause**: Deleting a JSON property means also deleting exactly one of
+  its adjacent separators (the comma before OR after, never both, never
+  none), and deciding whether surrounding whitespace is the removed line's
+  indent or the next property's indent.
+- **Correction**: middle/last property → drop the preceding comma; first
+  property → drop the following comma plus the removed line's indentation,
+  keep the next property's indent. Covered by tests in
+  `tests/test_qwen_json.cpp` (`testRemoveTopLevelProperty`).
+- **Prevention**: any text surgery on user-owned files must round-trip
+  through a parser check in tests (`qjsonStringValue(stripped, ...)` must
+  still decode every remaining field) before shipping.
+
+## 4. "Already clean" checks must be scope-aware (found 2026-10)
+
+- **Mistake/context**: `importConfigSecret` decided whether a config file
+  still needed its `api_key` stripped by searching for the key name anywhere
+  in the file; a nested `vocabulary.api_key` made it think the file was
+  dirty, the rewrite "failed", and the key was never cached.
+- **Root cause**: First-occurrence string search vs. top-level scope: the
+  naive check cannot distinguish a top-level property from a same-named
+  nested one.
+- **Correction**: Use the scope-aware walker (`qjsonTopLevelString` on the
+  root object) for presence checks; nested-only matches mean "already clean".
+- **Prevention**: In this codebase, never use bare `find("\"key\"")` presence
+  checks for JSON semantics — always the scope-aware helpers in
+  `qwen_json.h`.

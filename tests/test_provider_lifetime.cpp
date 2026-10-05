@@ -36,9 +36,9 @@ void writeConfig(const std::filesystem::path &path,
                  const std::filesystem::path &root,
                  const std::filesystem::path &fakeSherpa) {
     std::ofstream config(path);
-    config << "{\"fire_red\":{\"model_dir\":\"" << root.string()
+    config << "{\"model_dir\":\"" << root.string()
            << "\",\"bin_path\":\"" << fakeSherpa.string()
-           << "\",\"num_threads\":1,\"timeout_sec\":3}}\n";
+           << "\",\"num_threads\":1,\"timeout_sec\":3}\n";
 }
 
 bool testNormalCompletion(const std::filesystem::path &root,
@@ -145,7 +145,7 @@ int main() {
     fs::create_directories(configDir);
 
     setenv("HOME", root.c_str(), 1);
-    auto configPath = configDir / "advanced.json";
+    auto configPath = configDir / "fire_red.json";
     return testNormalCompletion(root, configPath) &&
                    testHungChildCancellation(root, configPath) &&
                    testCallbackRelease(root, configPath)

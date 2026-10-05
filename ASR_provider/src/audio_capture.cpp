@@ -98,16 +98,16 @@ AudioCapture::AudioCapture() {
 
     static bool configLoaded = false;
     if (!configLoaded) {
-        auto adv = advancedSection("audio");
-        if (!adv.empty()) {
-            auto t = jsonDouble(adv, "lufs_target", lufsTarget_);
+        auto cfg = readConfigFile("audio.json");
+        if (!cfg.empty()) {
+            auto t = jsonDouble(cfg, "lufs_target", lufsTarget_);
             if (t > -100.0 && t < 0.0) lufsTarget_ = t;
-            speexLevel_ = jsonInt(adv, "speex_level", speexLevel_);
-            crestThreshold_ = jsonDouble(adv, "crest_threshold", crestThreshold_);
-            fprintf(stderr, "Vinput Capture: config audio section parsed: crest_threshold=%.2f lufs_target=%.1f speex_level=%d\n",
+            speexLevel_ = jsonInt(cfg, "speex_level", speexLevel_);
+            crestThreshold_ = jsonDouble(cfg, "crest_threshold", crestThreshold_);
+            fprintf(stderr, "Vinput Capture: audio.json parsed: crest_threshold=%.2f lufs_target=%.1f speex_level=%d\n",
                     crestThreshold_, lufsTarget_, speexLevel_);
         } else {
-            fprintf(stderr, "Vinput Capture: advanced.json [audio] section not found, using defaults\n");
+            fprintf(stderr, "Vinput Capture: audio.json tuning keys not found, using defaults\n");
         }
         configLoaded = true;
     }

@@ -29,9 +29,16 @@ who want fast push-to-talk dictation without leaving the keyboard.
   (`Vinput Qwen [timer] encode/network/parse` logs, `diagnostic_log` events).
 - Every provider must degrade loudly and recoverably: cancellable requests,
   curl handle eviction on transport failure, actionable error strings.
-- Configuration is plain JSON split per concern (`qwen.json`, `doubao.json`,
-  `audio.json`, `vinput.json`, `advanced.json`), examples tracked in `config/`,
+- Configuration is one plain-JSON file per concern/provider (`qwen.json`,
+  `doubao.json`, `audio.json`, `vinput.json`, `zipformer.json`,
+  `fire_red.json`), examples tracked in `config/`,
   installed to `/etc/vinput/`, overridable per-user in `~/.config/vinput/`.
+  `advanced.json` was removed in the 2026-10 breaking restructure — each
+  provider owns exactly one file now.
+- Cloud API keys follow the keyring lifecycle in `secret_store.h`: the
+  `api_key` JSON field is a one-time import channel into the Secret Service
+  store and is stripped after a successful import; without a keyring backend
+  the plaintext field is kept.
 
 ## Project Principles
 

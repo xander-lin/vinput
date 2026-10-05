@@ -16,11 +16,12 @@ install=PKGBUILD.install
 source=("$_pkgname::git+https://gitee.com/xander-lin/vinput.git")
 sha256sums=('SKIP')
 backup=(
-    'etc/vinput/advanced.json'
     'etc/vinput/audio.json'
     'etc/vinput/doubao.json'
+    'etc/vinput/fire_red.json'
     'etc/vinput/qwen.json'
     'etc/vinput/vinput.json'
+    'etc/vinput/zipformer.json'
 )
 
 pkgver() {

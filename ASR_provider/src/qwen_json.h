@@ -325,8 +325,109 @@ inline std::string qwenExtractErrorDetail(const std::string &body) {
     return code;
 }
 
-// qwen3-asr-flash / qwen2-audio era models use the old wire format
-// ({"audio": ...} + asr_options). Everything newer (qwen-audio-3.x,
+// Removes a top-level property (key and value plus the appropriate comma)
+// from the JSON object text starting at objStart, leaving nested same-name
+// keys untouched. Returns the rewritten JSON text, or "" when the key is
+// absent or the removal cannot be done safely (caller keeps the original).
+// Used to strip "api_key" from a vendor config after importing the secret
+// into the encrypted store.
+inline std::string qjsonRemoveTopLevelProperty(const std::string &json,
+                                               const std::string &key) {
+    size_t objStart = json.find('{');
+    if (objStart == std::string::npos) return "";
+    size_t pos = objStart + 1;
+    int depth = 0;
+    bool expectKey = true;
+    while (pos < json.size()) {
+        char c = json[pos];
+        if (c == '"') {
+            size_t keyStart = pos;
+            size_t end = qjsonSkipString(json, pos);
+            if (end == std::string::npos) return "";
+            std::string str = json.substr(keyStart + 1, end - keyStart - 2);
+            pos = end;
+            if (depth == 0 && expectKey && str == key) {
+                while (pos < json.size() &&
+                       (json[pos] == ' ' || json[pos] == '\t' ||
+                        json[pos] == '\n' || json[pos] == '\r' || json[pos] == ':')) {
+                    pos++;
+                }
+                size_t valueEnd = pos;  // one past the value
+                if (pos >= json.size()) return "";
+                if (json[pos] == '"') {
+                    valueEnd = qjsonSkipString(json, pos);
+                } else if (json[pos] == '{' || json[pos] == '[') {
+                    int vdepth = 0;
+                    while (valueEnd < json.size()) {
+                        char d = json[valueEnd];
+                        if (d == '"') {
+                            valueEnd = qjsonSkipString(json, valueEnd);
+                            if (valueEnd == std::string::npos) return "";
+                            continue;
+                        }
+                        if (d == '{' || d == '[') vdepth++;
+                        else if (d == '}' || d == ']') {
+                            vdepth--;
+                            if (vdepth == 0) { valueEnd++; break; }
+                        }
+                        valueEnd++;
+                    }
+                } else {
+                    while (valueEnd < json.size() && json[valueEnd] != ',' &&
+                           json[valueEnd] != '}' && json[valueEnd] != ']' &&
+                           json[valueEnd] != ' ' && json[valueEnd] != '\n' &&
+                           json[valueEnd] != '\r' && json[valueEnd] != '\t') {
+                        valueEnd++;
+                    }
+                }
+                if (valueEnd == std::string::npos || valueEnd >= json.size())
+                    return "";
+                // Extend past a trailing comma when the property is first.
+                size_t after = valueEnd;
+                while (after < json.size() && (json[after] == ' ' || json[after] == '\t' ||
+                                               json[after] == '\n' || json[after] == '\r')) {
+                    after++;
+                }
+                if (json[after] == ',') after++;
+                // Include a preceding comma when the property is not first.
+                size_t removalStart = keyStart;
+                size_t back = keyStart;
+                do {
+                    back--;
+                } while (back > objStart && (json[back] == ' ' || json[back] == '\t' ||
+                                             json[back] == '\n' || json[back] == '\r'));
+                if (back > objStart && json[back] == ',') {
+                    // Property is not first: drop the preceding comma too.
+                    removalStart = back;
+                    after = valueEnd;  // keep the following comma
+                } else {
+                    // First property: also swallow its indentation.
+                    while (removalStart > objStart + 1 &&
+                           (json[removalStart - 1] == ' ' || json[removalStart - 1] == '\t' ||
+                            json[removalStart - 1] == '\n' || json[removalStart - 1] == '\r')) {
+                        removalStart--;
+                    }
+                }
+                return json.substr(0, removalStart) + json.substr(after);
+            }
+            if (depth == 0) expectKey = !expectKey;
+            continue;
+        }
+        if (c == '{' || c == '[') { depth++; pos++; continue; }
+        if (c == '}' || c == ']') {
+            if (depth == 0 && c == '}') return "";  // end, key not found
+            depth--;
+            if (depth < 0) return "";
+            pos++;
+            continue;
+        }
+        if (c == ',') { if (depth == 0) expectKey = true; pos++; continue; }
+        pos++;
+    }
+    return "";
+}
+
+// qwen3-asr-flash / qwen2-audio era models use the old wire format// ({"audio": ...} + asr_options). Everything newer (qwen-audio-3.x,
 // fun-asr-flash, and by default unknown future names) uses input_audio.
 inline bool qwenIsLegacyModel(const std::string &model) {
     return model.rfind("qwen3-asr-flash", 0) == 0 ||

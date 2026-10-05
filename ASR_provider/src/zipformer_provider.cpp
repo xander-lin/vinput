@@ -28,13 +28,13 @@ static std::string expandPath(const std::string &p) {
 
 ZipformerAsrProvider::ZipformerAsrProvider()
     : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {
-    auto adv = advancedSection("zipformer");
-    if (!adv.empty()) {
-        auto d = jsonStr(adv, "model_dir");
+    auto cfg = readConfigFile("zipformer.json");
+    if (!cfg.empty()) {
+        auto d = jsonStr(cfg, "model_dir");
         if (!d.empty()) modelDir_ = d;
-        numThreads_ = jsonInt(adv, "num_threads", numThreads_);
-        timeoutSec_ = jsonInt(adv, "timeout_sec", timeoutSec_);
-        auto b = jsonStr(adv, "bin_path");
+        numThreads_ = jsonInt(cfg, "num_threads", numThreads_);
+        timeoutSec_ = jsonInt(cfg, "timeout_sec", timeoutSec_);
+        auto b = jsonStr(cfg, "bin_path");
         if (!b.empty()) sherpaBin_ = b;
     }
 }

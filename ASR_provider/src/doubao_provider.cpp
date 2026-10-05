@@ -1,4 +1,5 @@
 #include "doubao_provider.h"
+#include "secret_store.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -128,30 +129,9 @@ static bool jsonBoolValue(const std::string &json, const std::string &key,
     return val == "true";
 }
 
-static void loadConfig(DoubaoSettings &s) {
-    std::string json = readConfigFile("doubao.json");
-    if (json.empty()) {
-        fprintf(stderr, "Vinput Doubao: no config found for doubao.json\n");
-        return;
-    }
-    s.apiKey = jsonGetString(json, "api_key");
-    s.resourceId = jsonGetString(json, "resource_id");
-    std::string v = jsonGetString(json, "model_name");
-    if (!v.empty()) s.modelName = v;
-    s.enableItn = jsonBoolValue(json, "enable_itn", s.enableItn);
-    s.enablePunc = jsonBoolValue(json, "enable_punc", s.enablePunc);
-}
-
 DoubaoAsrProvider::DoubaoAsrProvider() {
-    auto adv = advancedSection("doubao");
-    if (!adv.empty()) {
-        pollIntervalMsec_ = jsonInt(adv, "poll_interval_msec", pollIntervalMsec_);
-        maxPolls_ = jsonInt(adv, "max_polls", maxPolls_);
-        submitTimeout_ = (long)jsonInt(adv, "submit_timeout_sec", (int)submitTimeout_);
-        queryTimeout_ = (long)jsonInt(adv, "query_timeout_sec", (int)queryTimeout_);
-    }
     state_ = std::make_shared<WorkerState>();
-    worker_ = std::thread([state = state_] { workerLoop(state); });
+    worker_ = std::thread([this, state = state_] { workerLoop(state); });
 }
 
 DoubaoAsrProvider::~DoubaoAsrProvider() {
@@ -175,16 +155,30 @@ void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &val
     else if (key == "resource_id") resourceIdOverride_ = value;
 }
 
-DoubaoSettings DoubaoAsrProvider::resolveSettings() const {
+DoubaoSettings DoubaoAsrProvider::resolveSettings() {
     DoubaoSettings s;
-    loadConfig(s);
-    if (!apiKeyOverride_.empty()) s.apiKey = apiKeyOverride_;
+    std::string fileKey;
+    std::string json = readConfigFile("doubao.json");
+    if (!json.empty()) {
+        fileKey = jsonGetString(json, "api_key");
+        s.resourceId = jsonGetString(json, "resource_id");
+        std::string v = jsonGetString(json, "model_name");
+        if (!v.empty()) s.modelName = v;
+        s.enableItn = jsonBoolValue(json, "enable_itn", s.enableItn);
+        s.enablePunc = jsonBoolValue(json, "enable_punc", s.enablePunc);
+        pollIntervalMsec_ = jsonInt(json, "poll_interval_msec", pollIntervalMsec_);
+        maxPolls_ = jsonInt(json, "max_polls", maxPolls_);
+        submitTimeout_ = jsonInt(json, "submit_timeout_sec", (int)submitTimeout_);
+        queryTimeout_ = jsonInt(json, "query_timeout_sec", (int)queryTimeout_);
+    }
     if (!resourceIdOverride_.empty()) s.resourceId = resourceIdOverride_;
+    s.apiKey = resolveApiKeyLifecycle("doubao", "doubao.json", fileKey,
+                                      keyringCache_, apiKeyOverride_);
     return s;
 }
 
 void DoubaoAsrProvider::transcribe(std::vector<int16_t> samples, const std::string &wavPath) {
-    Task task{std::move(samples), wavPath, resolveSettings(),
+    Task task{std::move(samples), wavPath,
               pollIntervalMsec_, maxPolls_, submitTimeout_, queryTimeout_,
               std::make_shared<std::atomic_bool>(false), onResult_, onError_,
               diagnosticId_};
@@ -217,8 +211,11 @@ void DoubaoAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
             {"recognition_id", std::to_string(task.diagnosticId)},
             {"wav_hash", hashDiagnosticValue(task.wavPath).substr(0, 16)}
         });
+        // Config (and the API key lifecycle) is resolved on the worker thread
+        // so secret-store calls never block the UI thread.
+        DoubaoSettings settings = resolveSettings();
         processRecording(std::move(task.samples), task.wavPath,
-                         task.settings,
+                         settings,
                          task.pollIntervalMsec, task.maxPolls,
                          task.submitTimeout, task.queryTimeout,
                          std::move(task.cancel), std::move(task.onResult),

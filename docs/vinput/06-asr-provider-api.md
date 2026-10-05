@@ -82,8 +82,8 @@ auto asr = reg.create("mock");
 | ID | Name | Input | External dependency |
 |----|------|-------|---------------------|
 | `mock` | Mock (test) | generated samples or empty WAV path | none |
-| `doubao` | Doubao AUC | WAV path / encoded WAV | API key in `~/.config/vinput/doubao.json` |
-| `qwen` | Qwen ASR (model configurable, default `qwen-audio-3.1-asr-flash`) | WAV path / Data URL | API key in `~/.config/vinput/qwen.json` |
+| `doubao` | Doubao AUC | WAV path / encoded WAV | API key via `~/.config/vinput/doubao.json` (imported to keyring on first use) |
+| `qwen` | Qwen ASR (model configurable, default `qwen-audio-3.1-asr-flash`) | WAV path / Data URL | API key via `~/.config/vinput/qwen.json` (imported to keyring on first use) |
 | `zipformer` | Local Zipformer | WAV path / local binary | sherpa-onnx binary and model files |
 | `fire_red` | Local FireRed | WAV path / local binary | sherpa-onnx-offline binary and model files |
 

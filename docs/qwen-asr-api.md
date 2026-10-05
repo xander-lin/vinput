@@ -31,13 +31,14 @@ Vinput 的 `qwen` provider 通过 DashScope multimodal 同步接口调用阿里�
     "keep_dialect": false,
     "speaker_diarization": false,
     "vocabulary": {"Vinput": 5},
-    "vocabulary_id": ""
+    "vocabulary_id": "",
+    "timeout_sec": 60
 }
 ```
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
-| `api_key` | 必填 | 百炼 API Key（https://bailian.console.aliyun.com/?tab=model#/api-key） |
+| `api_key` | 一次性通道 | 写入后下次识别自动导入加密密钥库（KWallet/GNOME Keyring）并从文件中删除；再次写入即更新密钥。无密钥库后端时保留明文并告警 |
 | `model` | `qwen-audio-3.1-asr-flash` | 模型 ID，见上表 |
 | `endpoint` | 北京 DashScope 域名 | 可切换到 `{WorkspaceId}.cn-beijing.maas.aliyuncs.com` 新域名 |
 | `request_style` | `auto` | `auto` 按模型家族选请求格式；可强制 `input_audio` / `legacy` |
@@ -46,6 +47,7 @@ Vinput 的 `qwen` provider 通过 DashScope multimodal 同步接口调用阿里�
 | `speaker_diarization` | `false` | 仅 3.1：说话人分离 |
 | `vocabulary` | 不启用 | 即时热词 `{"词":权重}`，权重 1–5 或 50（超级热词） |
 | `vocabulary_id` | 不启用 | 控制台预编译热词表 ID |
+| `timeout_sec` | `60` | 整个请求的 curl 超时 |
 
 `format`/`sample_rate` 描述 Vinput 自身录音管线（16 kHz 单声道 WAV），
 固定发送，不可配置。

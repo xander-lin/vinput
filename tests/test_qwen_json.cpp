@@ -145,6 +145,55 @@ void testErrorDetail() {
     checkEq(vinput::qwenExtractErrorDetail(""), "", "empty body detail");
 }
 
+void testRemoveTopLevelProperty() {
+    using vinput::qjsonRemoveTopLevelProperty;
+    checkEq(qjsonRemoveTopLevelProperty(
+                "{\"api_key\":\"x\",\"model\":\"y\"}", "api_key"),
+            "{\"model\":\"y\"}", "remove first property");
+    checkEq(qjsonRemoveTopLevelProperty(
+                "{\"model\":\"y\",\"api_key\":\"x\",\"endpoint\":\"z\"}",
+                "api_key"),
+            "{\"model\":\"y\",\"endpoint\":\"z\"}", "remove middle property");
+    checkEq(qjsonRemoveTopLevelProperty(
+                "{\"model\":\"y\",\"api_key\":\"x\"}", "api_key"),
+            "{\"model\":\"y\"}", "remove last property");
+    checkEq(qjsonRemoveTopLevelProperty("{\"api_key\":\"x\"}", "api_key"),
+            "{}", "remove only property");
+    // Pretty-printed with whitespace and newlines.
+    checkEq(qjsonRemoveTopLevelProperty(
+                "{\n  \"api_key\": \"sk-1\",\n  \"model\": \"m\"\n}\n",
+                "api_key"),
+            "{\n  \"model\": \"m\"\n}\n", "remove in pretty-printed JSON");
+    // Nested same-name key must survive.
+    std::string nested =
+        "{\"vocabulary\":{\"api_key\":\"keep\"},\"api_key\":\"drop\","
+        "\"model\":\"m\"}";
+    std::string stripped = qjsonRemoveTopLevelProperty(nested, "api_key");
+    checkEq(vinput::qjsonStringValue(stripped, "model"), "m",
+            "model survives nested case");
+    check(stripped.find("keep") != std::string::npos,
+          "nested api_key value kept");
+    check(stripped.find("drop") == std::string::npos,
+          "top-level api_key dropped");
+    // Value containing commas and braces inside a string.
+    checkEq(qjsonRemoveTopLevelProperty(
+                "{\"api_key\":\"a,b}c\",\"model\":\"y\"}", "api_key"),
+            "{\"model\":\"y\"}", "commas/braces inside value string");
+    // Non-string value.
+    checkEq(qjsonRemoveTopLevelProperty(
+                "{\"api_key\":12345,\"model\":\"y\"}", "api_key"),
+            "{\"model\":\"y\"}", "remove non-string value");
+    // Object value.
+    checkEq(qjsonRemoveTopLevelProperty(
+                "{\"api_key\":{\"a\":[1,2]},\"model\":\"y\"}", "api_key"),
+            "{\"model\":\"y\"}", "remove object value");
+    // Absent / invalid.
+    checkEq(qjsonRemoveTopLevelProperty("{\"model\":\"y\"}", "api_key"), "",
+            "absent key returns empty");
+    checkEq(qjsonRemoveTopLevelProperty("not json", "api_key"), "",
+            "invalid json returns empty");
+}
+
 void testLegacyDetection() {
     check(vinput::qwenIsLegacyModel("qwen3-asr-flash"), "qwen3 mainline");
     check(vinput::qwenIsLegacyModel("qwen3-asr-flash-2025-09-08"),
@@ -174,6 +223,7 @@ int main() {
     testTopLevelString();
     testRawValue();
     testErrorDetail();
+    testRemoveTopLevelProperty();
     testLegacyDetection();
     if (failures) {
         std::cerr << failures << " check(s) failed\n";

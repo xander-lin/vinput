@@ -65,13 +65,14 @@ Per-user files under `~/.config/vinput/` override `/etc/vinput/`. Missing per-us
 mkdir -p ~/.config/vinput
 
 # Copy tracked examples, then edit local files under ~/.config/vinput/
-cp config/doubao.json.example ~/.config/vinput/doubao.json
-cp config/qwen.json.example ~/.config/vinput/qwen.json
-cp config/audio.json.example ~/.config/vinput/audio.json
 cp config/vinput.json.example ~/.config/vinput/vinput.json
-cp config/advanced.json.example ~/.config/vinput/advanced.json
+cp config/audio.json.example ~/.config/vinput/audio.json
+cp config/qwen.json.example ~/.config/vinput/qwen.json
+cp config/doubao.json.example ~/.config/vinput/doubao.json
 
-# Doubao and Qwen need API keys before use
+# Cloud providers: put your API key into the JSON once; Vinput imports it
+# into the encrypted keyring (KWallet/GNOME Keyring) and removes the field
+# from the file on the next recognition. Re-adding the field updates the key.
 ```
 
 ### 3. Restart fcitx5
@@ -143,7 +144,7 @@ rm *.tar.bz2
 ```
 
 > Model archives are at [sherpa-onnx ASR models](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models).  
-> Custom paths can be set in `~/.config/vinput/advanced.json`.
+> Custom paths can be set in `~/.config/vinput/zipformer.json` and `~/.config/vinput/fire_red.json`.
 
 
 ## Configuration
@@ -152,24 +153,36 @@ Config is loaded from `~/.config/vinput/` first, then `/etc/vinput/`. If a user 
 
 Tracked files under `config/*.json.example` are examples only. Runtime `*.json` files are ignored by Git and should stay under `~/.config/vinput/`.
 
+Every provider config is re-read before each recognition, so model and parameter changes apply on the next recording without restarting fcitx5.
+
 ### User-facing (must configure)
 
 | File | Purpose | Example |
 |------|---------|---------|
-| `doubao.json` | Doubao API credentials | copy from `config/doubao.json.example` |
-| `qwen.json` | Qwen API key, ASR model, hot words | copy from `config/qwen.json.example` |
-| `vinput.json` | Interaction tuning | copy from `config/vinput.json.example` |
+| `qwen.json` | Qwen API key (imported to keyring), ASR model, hot words | copy from `config/qwen.json.example` |
+| `doubao.json` | Doubao API key (imported to keyring), resource ID, model | copy from `config/doubao.json.example` |
 
-### Advanced (optional, all defaults in code)
+### Optional (all defaults in code)
 
 | File | Purpose |
 |------|---------|
-| `advanced.json` | All tunables: model paths, thread counts, timeouts, audio params, copy from `config/advanced.json.example` |
-| `audio.json` | Denoiser: `"none"` \| `"speexdsp"` \| `"deepfilter"`, copy from `config/audio.json.example` |
+| `vinput.json` | Interaction tuning: activation delay, notifications, debounce |
+| `audio.json` | Denoiser (`"none"` \| `"speexdsp"` \| `"deepfilter"`) and audio tuning |
+| `zipformer.json` | Local Zipformer: model dir, binary, threads, timeout |
+| `fire_red.json` | Local FireRed: model dir, binary, threads, timeout |
+
+### API key security
+
+`api_key` in `qwen.json`/`doubao.json` is a one-time write channel: on the
+next recognition Vinput imports the key into the encrypted Secret Service
+store (KWallet / GNOME Keyring via `secret-tool`), then removes the field
+from the JSON (atomic rewrite, mode `0600`). Writing the field again later
+updates the stored key. On systems without a keyring backend the plaintext
+field is kept with a warning, so headless setups keep working.
 
 ### Cloud polling
 
-`advanced.json` has an optional `doubao` section. `poll_interval_msec` is the
+`doubao.json` tunes the async result polling. `poll_interval_msec` is the
 normal polling interval (default `800`); the first query is made after 300ms
 to reduce short-utterance latency, then the normal interval is restored. Keep
 the default unless the API's QPS limit requires a slower cadence.

@@ -40,10 +40,26 @@ Enter provider/denoiser switching mode. While holding CapsLock:
 \fB\(da / j\fP   \-\- next denoiser
 .SH CONFIGURATION
 Configuration files are stored in \fB~/.config/vinput/\fP.
+Every provider config is re-read before each recognition; model and
+parameter changes apply on the next recording without restarting fcitx5.
+.SS API key security
+Writing \fBapi_key\fP into \fBqwen.json\fP or \fBdoubao.json\fP is a
+one-time write channel: on the next recognition Vinput imports the key into
+the encrypted Secret Service store (KWallet / GNOME Keyring, via
+\fBsecret-tool\fP), then removes the field from the JSON by an atomic
+rewrite (file mode 0600). Writing the field again later updates the stored
+key. Without a keyring backend the plaintext field is kept with a warning.
+Inspect or clear stored keys with:
+.RS
+.nf
+secret-tool lookup service vinput provider qwen
+secret-tool clear service vinput provider qwen
+.fi
+.RE
 .SS User-facing (must edit)
 .TP
 \fBdoubao.json\fP
-API credentials for ByteDance Volcengine ASR.
+API credentials for ByteDance Volcengine ASR plus model and polling tuning.
 .RS
 .nf
 {"api_key": "xxx", "resource_id": "volc.seedasr.auc"}
@@ -69,27 +85,25 @@ Interaction parameters.
 .RE
 .SS Advanced (optional, all have hardcoded defaults)
 .TP
-\fBadvanced.json\fP
-All tuning parameters in one file. Sections:
-.IR audio ,
-.IR doubao ,
-.IR qwen ,
-.IR zipformer ,
-.IR fire_red .
-See default values in the distributed example.
-.PP
-For Doubao, \fBpoll_interval_msec\fP is the normal result polling interval.
-The first query is sent after 300ms to improve short-utterance latency; later
-queries use the configured interval.
-.SS Audio
-.TP
 \fBaudio.json\fP
-Denoiser selection.
+Denoiser selection and audio tuning.
 .RS
 .nf
 {"denoise": "speexdsp"}   \fR# none | speexdsp | deepfilter\fP
 .fi
 .RE
+.TP
+\fBzipformer.json\fP
+Local Zipformer tuning: \fBmodel_dir\fP, \fBbin_path\fP, \fBnum_threads\fP,
+\fBtimeout_sec\fP.
+.TP
+\fBfire_red.json\fP
+Local FireRed tuning: \fBmodel_dir\fP, \fBbin_path\fP, \fBnum_threads\fP,
+\fBtimeout_sec\fP.
+.PP
+For Doubao, \fBpoll_interval_msec\fP (in \fBdoubao.json\fP) is the normal
+result polling interval. The first query is sent after 300ms to improve
+short-utterance latency; later queries use the configured interval.
 .SH ASR PROVIDERS
 .TP
 \fBMock\fP

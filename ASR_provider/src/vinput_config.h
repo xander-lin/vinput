@@ -93,18 +93,6 @@ inline double jsonDouble(const std::string &json, const std::string &key, double
     return val;
 }
 
-inline std::string advancedSection(const std::string &key) {
-    auto cfg = readConfigFile("advanced.json");
-    if (cfg.empty()) return "";
-    auto pos = cfg.find("\"" + key + "\"");
-    if (pos == std::string::npos) return "";
-    auto start = cfg.find('{', pos);
-    if (start == std::string::npos) return "";
-    auto end = cfg.find('}', start);
-    if (end == std::string::npos) return "";
-    return cfg.substr(start, end - start + 1);
-}
-
 struct CurlHandle {
     CURL *curl;
     CurlHandle() : curl(curl_easy_init()) {}
