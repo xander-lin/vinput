@@ -1,4 +1,7 @@
 {
     "api_key": "YOUR_API_KEY",
-    "resource_id": "volc.seedasr.auc"
+    "resource_id": "volc.seedasr.auc",
+    "model_name": "bigmodel",
+    "enable_itn": true,
+    "enable_punc": true
 }

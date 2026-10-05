@@ -1,4 +1,5 @@
 #include "qwen_provider.h"
+#include "qwen_json.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -12,7 +13,15 @@
 
 namespace vinput {
 
-static std::string base64Encode(const uint8_t *data, size_t len) {
+namespace {
+
+// Defaults track the current DashScope generation (verified 2026-10). Both are
+// overridable from qwen.json so future model/domain changes need no rebuild.
+constexpr const char *kDefaultQwenModel = "qwen-audio-3.1-asr-flash";
+constexpr const char *kDefaultQwenEndpoint =
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+
+std::string base64Encode(const uint8_t *data, size_t len) {
     static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     std::string out;
     out.reserve((len + 2) / 3 * 4);
@@ -28,41 +37,59 @@ static std::string base64Encode(const uint8_t *data, size_t len) {
     return out;
 }
 
-static std::string jsonGetString(const std::string &json, const std::string &key) {
-    std::string q = "\"" + key + "\"";
-    auto pos = json.find(q);
-    if (pos == std::string::npos) return "";
-    pos += q.size();
-    while (pos < json.size() && (json[pos] == ' ' || json[pos] == ':' || json[pos] == '\t'))
-        pos++;
-    if (pos >= json.size() || json[pos] != '"') return "";
-    pos++;
-    auto end = json.find('"', pos);
-    if (end == std::string::npos) return "";
-    return json.substr(pos, end - pos);
-}
-
-static size_t writeCb(void *ptr, size_t size, size_t nmemb, std::string *out) {
+size_t writeCb(void *ptr, size_t size, size_t nmemb, std::string *out) {
     out->append((const char *)ptr, size * nmemb);
     return size * nmemb;
 }
 
-static void loadConfig(std::string &apiKey) {
-    const char *home = getenv("HOME");
-    if (!home) return;
-    std::string path = std::string(home) + "/.config/vinput/qwen.json";
-    std::ifstream f(path);
-    if (!f) {
-        fprintf(stderr, "Vinput Qwen: no config at %s\n", path.c_str());
-        return;
+std::string buildRequestBody(const QwenSettings &s, const std::string &dataUri) {
+    std::string model = jsonEscape(s.model);
+    if (qwenUsesLegacyRequest(s.model, s.requestStyle)) {
+        return "{"
+               "\"model\":\"" + model + "\","
+               "\"input\":{"
+               "\"messages\":["
+               "{\"content\":[{\"audio\":\"" + dataUri + "\"}],\"role\":\"user\"}"
+               "]"
+               "},"
+               "\"parameters\":{"
+               "\"asr_options\":{"
+               "\"enable_itn\":false"
+               "}"
+               "}"
+               "}";
     }
-    std::string json((std::istreambuf_iterator<char>(f)),
-                      std::istreambuf_iterator<char>());
-    apiKey = jsonGetString(json, "api_key");
+    // Current generation: input_audio content object; parameters.format is
+    // required and describes our own capture pipeline (16 kHz mono WAV).
+    std::string body =
+        "{"
+        "\"model\":\"" + model + "\","
+        "\"input\":{"
+        "\"messages\":[{"
+        "\"role\":\"user\","
+        "\"content\":[{"
+        "\"type\":\"input_audio\","
+        "\"input_audio\":{\"data\":\"" + dataUri + "\"}"
+        "}]"
+        "}]"
+        "},"
+        "\"parameters\":{"
+        "\"format\":\"wav\","
+        "\"sample_rate\":\"16000\"";
+    if (!s.languageHintsRaw.empty())
+        body += ",\"language_hints\":" + s.languageHintsRaw;
+    if (s.keepDialect) body += ",\"keep_dialect\":true";
+    if (s.speakerDiarization) body += ",\"speaker_diarization_enabled\":true";
+    if (!s.vocabularyRaw.empty()) body += ",\"vocabulary\":" + s.vocabularyRaw;
+    if (!s.vocabularyId.empty())
+        body += ",\"vocabulary_id\":\"" + jsonEscape(s.vocabularyId) + "\"";
+    body += "}}";
+    return body;
 }
 
+} // namespace
+
 QwenAsrProvider::QwenAsrProvider() {
-    loadConfig(apiKey_);
     auto adv = advancedSection("qwen");
     if (!adv.empty()) {
         timeout_ = (long)jsonInt(adv, "timeout_sec", (int)timeout_);
@@ -88,11 +115,36 @@ QwenAsrProvider::~QwenAsrProvider() {
 }
 
 void QwenAsrProvider::setConfig(const std::string &key, const std::string &value) {
-    if (key == "api_key") apiKey_ = value;
+    if (key == "api_key") apiKeyOverride_ = value;
+}
+
+QwenSettings QwenAsrProvider::resolveSettings() const {
+    QwenSettings s;
+    s.model = kDefaultQwenModel;
+    s.endpoint = kDefaultQwenEndpoint;
+    s.requestStyle = "auto";
+    std::string json = readConfigFile("qwen.json");
+    if (!json.empty()) {
+        s.apiKey = qjsonStringValue(json, "api_key");
+        std::string v = qjsonStringValue(json, "model");
+        if (!v.empty()) s.model = v;
+        v = qjsonStringValue(json, "endpoint");
+        if (!v.empty()) s.endpoint = v;
+        v = qjsonStringValue(json, "request_style");
+        if (!v.empty()) s.requestStyle = v;
+        s.languageHintsRaw = qjsonRawValue(json, "language_hints");
+        s.vocabularyRaw = qjsonRawValue(json, "vocabulary");
+        s.vocabularyId = qjsonStringValue(json, "vocabulary_id");
+        s.keepDialect = qjsonRawValue(json, "keep_dialect") == "true";
+        s.speakerDiarization =
+            qjsonRawValue(json, "speaker_diarization") == "true";
+    }
+    if (!apiKeyOverride_.empty()) s.apiKey = apiKeyOverride_;
+    return s;
 }
 
 void QwenAsrProvider::transcribe(std::vector<int16_t> samples, const std::string &wavPath) {
-    Task task{std::move(samples), wavPath, apiKey_, timeout_,
+    Task task{std::move(samples), wavPath, resolveSettings(), timeout_,
               std::make_shared<std::atomic_bool>(false), onResult_, onError_,
               diagnosticId_};
     {
@@ -125,7 +177,7 @@ void QwenAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
             {"wav_hash", hashDiagnosticValue(task.wavPath).substr(0, 16)}
         });
         processRecording(std::move(task.samples), task.wavPath,
-                         std::move(task.apiKey), task.timeout,
+                         task.settings, task.timeout,
                          std::move(task.cancel), std::move(task.onResult),
                          std::move(task.onError), task.diagnosticId);
         {
@@ -138,22 +190,24 @@ void QwenAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
 
 void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
                                         const std::string &wavPath,
-                                        std::string apiKey, long timeout,
+                                        const QwenSettings &settings, long timeout,
                                         std::shared_ptr<std::atomic_bool> cancel,
                                         AsrResultCallback onR,
                                         AsrErrorCallback onE,
                                         uint64_t diagnosticId) {
-    fprintf(stderr, "Vinput Qwen: recorded %zu samples to %s\n",
-            samples.size(), wavPath.c_str());
+    fprintf(stderr, "Vinput Qwen: recorded %zu samples to %s (model=%s style=%s)\n",
+            samples.size(), wavPath.c_str(), settings.model.c_str(),
+            qwenUsesLegacyRequest(settings.model, settings.requestStyle)
+                ? "legacy" : "input_audio");
     diagnosticLog().event("provider", "request_started", {
-        {"provider", "qwen"},
-        {"recognition_id", std::to_string(diagnosticId)},
+        {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
+        {"model", settings.model},
         {"wav_hash", hashDiagnosticValue(wavPath).substr(0, 16)},
         {"sample_count", std::to_string(samples.size())}
     });
     struct Cleanup { std::string p; ~Cleanup() { unlink(p.c_str()); } } _wav{wavPath};
 
-    if (apiKey.empty()) {
+    if (settings.apiKey.empty()) {
         diagnosticLog().event("provider", "request_error", {
             {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
             {"reason", "missing_api_key"}
@@ -195,30 +249,16 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         if (onE) onE("Qwen: curl init failed");
         return;
     }
-    std::string requestBody =
-        "{"
-        "\"model\":\"qwen3-asr-flash\","
-        "\"input\":{"
-        "\"messages\":["
-        "{\"content\":[{\"audio\":\"" + dataUri + "\"}],\"role\":\"user\"}"
-        "]"
-        "},"
-        "\"parameters\":{"
-        "\"asr_options\":{"
-        "\"enable_itn\":false"
-        "}"
-        "}"
-        "}";
+    std::string requestBody = buildRequestBody(settings, dataUri);
 
     curl_easy_reset(curl);
     std::string respBody;
     struct curl_slist *headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers,
-        ("Authorization: Bearer " + apiKey).c_str());
+        ("Authorization: Bearer " + settings.apiKey).c_str());
 
-    curl_easy_setopt(curl, CURLOPT_URL,
-        "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation");
+    curl_easy_setopt(curl, CURLOPT_URL, settings.endpoint.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, requestBody.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)requestBody.size());
@@ -260,30 +300,28 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         return;
     }
     if (httpCode != 200) {
+        std::string detail = qwenExtractErrorDetail(respBody);
+        fprintf(stderr, "Vinput Qwen: HTTP %ld error: %s\n", httpCode,
+                detail.c_str());
         diagnosticLog().event("provider", "request_error", {
             {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
-            {"reason", "http_status"}, {"http_code", std::to_string(httpCode)}
+            {"reason", "http_status"}, {"http_code", std::to_string(httpCode)},
+            {"detail", detail.empty() ? "-" : detail}
         });
         if (onE) {
+            std::string suffix = detail.empty() ? "" : " (" + detail + ")";
             if (httpCode == 429 || httpCode >= 500) {
                 onE("Qwen: service unavailable (HTTP " +
-                    std::to_string(httpCode) + ")");
+                    std::to_string(httpCode) + ")" + suffix);
             } else {
                 onE("Qwen: service request failed (HTTP " +
-                    std::to_string(httpCode) + ")");
+                    std::to_string(httpCode) + ")" + suffix);
             }
         }
         return;
     }
 
-    std::string text;
-    auto pos = respBody.find("\"text\":\"");
-    if (pos != std::string::npos) {
-        pos += 8;
-        auto end = respBody.find('"', pos);
-        if (end != std::string::npos)
-            text = respBody.substr(pos, end - pos);
-    }
+    std::string text = qwenExtractText(respBody);
 
     auto tParse = std::chrono::steady_clock::now();
     fprintf(stderr, "Vinput Qwen [timer] encode=%ldms network=%ldms parse=%ldms text_len=%zu\n",
@@ -295,6 +333,7 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
     if (onR && !text.empty()) {
         diagnosticLog().event("provider", "request_result", {
             {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
+            {"model", settings.model},
             {"text_length", std::to_string(text.size())},
             {"encode_ms", std::to_string(std::chrono::duration_cast<
                 std::chrono::milliseconds>(tEncode - t0).count())},
@@ -305,11 +344,13 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         });
         onR(text, true);
     } else if (onE) {
+        std::string detail = qwenExtractErrorDetail(respBody);
         diagnosticLog().event("provider", "request_error", {
             {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
-            {"reason", "empty_result"}
+            {"reason", "empty_result"}, {"detail", detail.empty() ? "-" : detail}
         });
-        onE("Qwen: empty result");
+        onE(detail.empty() ? "Qwen: empty result"
+                           : "Qwen: empty result (" + detail + ")");
     }
 }
 

@@ -1,96 +1,134 @@
-# 千问3-ASR-Flash API
+# Qwen ASR API（阿里云百炼 DashScope）
 
-千问3-ASR-Flash 通过 DashScope multimodal 接口调用，支持 base64 内联音频数据。
+Vinput 的 `qwen` provider 通过 DashScope multimodal 同步接口调用阿里云 ASR
+模型，音频以 base64 Data URL 内联传输，无需公网 URL。模型 ID、端点与识别
+选项全部由 `~/.config/vinput/qwen.json` 驱动，**每次识别前重读配置**，更换
+模型不需要重启 fcitx5，也不需要重新编译。
 
-## 与 Filetrans 的区别
+## 模型选型（2026-10 核实）
 
-| 特性 | qwen3-asr-flash | qwen3-asr-flash-filetrans |
-|------|----------------|--------------------------|
-| 音频长度 | ≤5 分钟 | ≤12 小时 |
-| 文件大小 | ≤10MB | ≤2GB |
-| 输入方式 | URL / base64 Data URL / 本地路径 | 仅公网 URL |
-| 调用模式 | 同步（单次 HTTP） | 异步（submit + poll） |
-| 流式输出 | 支持 | 不支持 |
+| 模型 ID | 代际 | 限制 | 说明 |
+|---------|------|------|------|
+| `qwen-audio-3.1-asr-flash` | 当前旗舰（默认） | ≤5 分钟 / ≤2GB | 热词、上下文、方言保留、说话人分离、按 Token 计费 |
+| `qwen-audio-3.0-asr-flash` | 当前 | ≤5 分钟 / ≤10MB | 上一版 |
+| `fun-asr-flash-2026-06-15` | 当前 | ≤5 分钟 / ≤2GB | 官方对 `qwen3-asr-flash` 系列的替代，按秒计费 |
+| `qwen3-asr-flash` | 旧（逐步下线中） | ≤5 分钟 / ≤10MB | 2026-07 起其最新快照已下线，仍可用但不要再新建业务 |
 
-语音输入场景选用 **qwen3-asr-flash**，因为支持 base64 内联音频，无需公网 URL。
+长音频异步转写（`*-filetrans`、`fun-asr`）是提交+轮询模式，不属于语音输
+入场景，Vinput 不使用。
 
-## API 详情
+## 配置
 
-### 提交转写（同步调用）
+文件：`~/.config/vinput/qwen.json`（缺失字段用默认值）
 
-**端点**: `POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation`
+```json
+{
+    "api_key": "sk-xxx",
+    "model": "qwen-audio-3.1-asr-flash",
+    "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    "request_style": "auto",
+    "language_hints": ["zh"],
+    "keep_dialect": false,
+    "speaker_diarization": false,
+    "vocabulary": {"Vinput": 5},
+    "vocabulary_id": ""
+}
+```
 
-**Header**:
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `api_key` | 必填 | 百炼 API Key（https://bailian.console.aliyun.com/?tab=model#/api-key） |
+| `model` | `qwen-audio-3.1-asr-flash` | 模型 ID，见上表 |
+| `endpoint` | 北京 DashScope 域名 | 可切换到 `{WorkspaceId}.cn-beijing.maas.aliyuncs.com` 新域名 |
+| `request_style` | `auto` | `auto` 按模型家族选请求格式；可强制 `input_audio` / `legacy` |
+| `language_hints` | 自动检测 | 语言代码数组（最多 4 个），如 `["zh","en"]` |
+| `keep_dialect` | `false` | 仅 3.1：保留方言表达（默认转普通话文本） |
+| `speaker_diarization` | `false` | 仅 3.1：说话人分离 |
+| `vocabulary` | 不启用 | 即时热词 `{"词":权重}`，权重 1–5 或 50（超级热词） |
+| `vocabulary_id` | 不启用 | 控制台预编译热词表 ID |
 
-| Key | Value |
-|-----|-------|
-| Authorization | Bearer {API_KEY} |
-| Content-Type | application/json |
+`format`/`sample_rate` 描述 Vinput 自身录音管线（16 kHz 单声道 WAV），
+固定发送，不可配置。
 
-**Body**:
+## 请求格式
+
+`request_style=auto` 规则：模型名以 `qwen3-asr-flash` / `qwen2-audio` /
+`qwen2-asr` 开头 → 旧格式；其余（含未知新模型）→ 新格式。
+
+### 新格式（qwen-audio-3.x / fun-asr-flash，当前默认）
+
+```json
+{
+    "model": "qwen-audio-3.1-asr-flash",
+    "input": {
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "input_audio",
+                "input_audio": {"data": "data:audio/wav;base64,{BASE64_DATA}"}
+            }]
+        }]
+    },
+    "parameters": {
+        "format": "wav",
+        "sample_rate": "16000",
+        "language_hints": ["zh"],
+        "vocabulary": {"Vinput": 5}
+    }
+}
+```
+
+响应（无 `choices` 字段）：
+
+```json
+{
+    "output": {
+        "sentence": {"sentence_id": 1, "sentence_end": true, "text": "识别文本", "words": []},
+        "text": "识别文本"
+    },
+    "usage": {"duration": 4},
+    "request_id": "..."
+}
+```
+
+文本提取路径：`output.text`，回退 `output.sentence.text`。
+
+### 旧格式（qwen3-asr-flash 系列）
 
 ```json
 {
     "model": "qwen3-asr-flash",
     "input": {
-        "messages": [
-            {
-                "content": [
-                    {"audio": "data:audio/wav;base64,{BASE64_DATA}"}
-                ],
-                "role": "user"
-            }
-        ]
+        "messages": [{"content": [{"audio": "data:audio/wav;base64,{BASE64_DATA}"}], "role": "user"}]
     },
-    "parameters": {
-        "asr_options": {
-            "enable_itn": false
-        }
-    }
+    "parameters": {"asr_options": {"enable_itn": false}}
 }
 ```
 
-### 响应
+响应文本路径：`output.choices[0].message.content[0].text`。
 
-成功 (HTTP 200):
+## 实现说明
 
-```json
-{
-    "output": {
-        "choices": [{
-            "message": {
-                "content": [{"text": "识别出的文本内容"}]
-            }
-        }]
-    }
-}
-```
+- 端点：`POST {endpoint}`，Header `Authorization: Bearer {api_key}`，
+  `Content-Type: application/json`；非流式（`X-DashScope-SSE` 不设置）。
+- 响应解析在 `ASR_provider/src/qwen_json.h`（`qwenExtractText` /
+  `qwenExtractErrorDetail`），对新旧两种 schema 容错，单测见
+  `tests/test_qwen_json.cpp`。
+- HTTP 非 200 时提取响应体中的 `code`/`message` 附加到错误信息。
+- 诊断日志 `request_started`/`request_result` 事件带 `model` 字段。
+- 流式（SSE）输出可作后续优化：长音频时 3.1 支持分句流式返回。
 
-文本提取路径: `output.choices[0].message.content[0].text`
+## 限制
 
-### 配置
+- QPS、音频大小/时长限制因模型而异（见上表）；base64 会增大体积 ~33%。
+- 热词、`keep_dialect`、`speaker_diarization` 仅对声明支持的模型生效；
+  对不支持的模型发送可能报参数错误，此时从配置中移除对应字段即可。
+- 地域：北京（默认域名）/新加坡 `dashscope-intl.aliyuncs.com`（改
+  `endpoint`）。
 
-文件: `~/.config/vinput/qwen.json`
+## 迁移记录
 
-```json
-{"api_key": "sk-xxx"}
-```
-
-API Key 获取: https://bailian.console.aliyun.com/?tab=model#/api-key
-
-### 流式输出
-
-设置 header `X-DashScope-SSE: enable` 可在响应中获取 SSE 事件流。当前 provider 实现使用非流式调用，一次返回完整结果。流式可用作后续优化。
-
-### 限制
-
-- 100 QPS (异步模式) / 本地文件上传 100 QPS
-- 音频限制: ≤10MB, ≤5 分钟
-- 支持格式: wav, mp3 等主流格式
-- Base64 编码会增大体积 ~33%，需确保编码后 ≤10MB
-
-### 地域
-
-- 中国内地（北京）: `dashscope.aliyuncs.com`
-- 新加坡: `dashscope-intl.aliyuncs.com`
-- 美国: 使用 `qwen3-asr-flash-us` 模型
+- 2026-10：默认模型从 `qwen3-asr-flash` 切换为 `qwen-audio-3.1-asr-flash`，
+  请求/响应格式按模型自动适配；旧模型仍可通过配置 `model` 字段使用。
+  背景：`qwen3-asr-flash-2026-02-10` 快照已于 2026-07 下线（公告 118434），
+  官方替代指向 Fun-ASR / Qwen-Audio-3.x 系列。

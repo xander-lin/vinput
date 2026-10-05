@@ -13,6 +13,16 @@
 
 namespace vinput {
 
+// Resolved from doubao.json (+ setConfig overrides) at transcribe() time.
+// Re-read per request so model/feature switches need no restart.
+struct DoubaoSettings {
+    std::string apiKey;
+    std::string resourceId;
+    std::string modelName = "bigmodel";  // request.model_name
+    bool enableItn = true;
+    bool enablePunc = true;
+};
+
 class DoubaoAsrProvider : public IAsrProvider {
 public:
     DoubaoAsrProvider();
@@ -25,8 +35,7 @@ private:
     struct Task {
         std::vector<int16_t> samples;
         std::string wavPath;
-        std::string apiKey;
-        std::string resourceId;
+        DoubaoSettings settings;
         int pollIntervalMsec;
         int maxPolls;
         long submitTimeout;
@@ -47,15 +56,17 @@ private:
     static void workerLoop(const std::shared_ptr<WorkerState> &state);
     static void processRecording(std::vector<int16_t> samples,
                                  const std::string &wavPath,
-                                 std::string apiKey, std::string resourceId,
+                                 const DoubaoSettings &settings,
                                  int pollIntervalMsec, int maxPolls,
                                  long submitTimeout, long queryTimeout,
                                  std::shared_ptr<std::atomic_bool> cancel,
                                   AsrResultCallback onR, AsrErrorCallback onE,
                                   uint64_t diagnosticId);
 
-    std::string apiKey_;
-    std::string resourceId_;
+    DoubaoSettings resolveSettings() const;
+
+    std::string apiKeyOverride_;     // set via setConfig; wins over doubao.json
+    std::string resourceIdOverride_;
     int pollIntervalMsec_ = 800;
     int maxPolls_ = 75;
     long submitTimeout_ = 30;

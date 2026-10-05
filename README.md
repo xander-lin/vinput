@@ -157,7 +157,7 @@ Tracked files under `config/*.json.example` are examples only. Runtime `*.json` 
 | File | Purpose | Example |
 |------|---------|---------|
 | `doubao.json` | Doubao API credentials | copy from `config/doubao.json.example` |
-| `qwen.json` | Qwen API key | copy from `config/qwen.json.example` |
+| `qwen.json` | Qwen API key, ASR model, hot words | copy from `config/qwen.json.example` |
 | `vinput.json` | Interaction tuning | copy from `config/vinput.json.example` |
 
 ### Advanced (optional, all defaults in code)

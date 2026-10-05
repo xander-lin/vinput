@@ -1,3 +1,5 @@
 {
-    "api_key": "sk-YOUR_API_KEY"
+    "api_key": "sk-YOUR_API_KEY",
+    "model": "qwen-audio-3.1-asr-flash",
+    "language_hints": ["zh"]
 }

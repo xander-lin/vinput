@@ -105,23 +105,44 @@ static std::string getHeader(const std::string &headers, const std::string &name
     return value;
 }
 
-static void loadConfig(std::string &apiKey, std::string &resourceId) {
-    const char *home = getenv("HOME");
-    if (!home) return;
-    std::string path = std::string(home) + "/.config/vinput/doubao.json";
-    std::ifstream f(path);
-    if (!f) {
-        fprintf(stderr, "Vinput Doubao: no config at %s\n", path.c_str());
+static bool jsonBoolValue(const std::string &json, const std::string &key,
+                          bool def) {
+    std::string q = "\"" + key + "\"";
+    auto pos = json.find(q);
+    if (pos == std::string::npos) return def;
+    pos = json.find(':', pos + q.size());
+    if (pos == std::string::npos) return def;
+    pos++;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                 json[pos] == '\n' || json[pos] == '\r')) pos++;
+    auto end = pos;
+    while (end < json.size() && json[end] != ',' && json[end] != '}' &&
+           json[end] != ']') {
+        end++;
+    }
+    std::string val = json.substr(pos, end - pos);
+    while (!val.empty() && (val.back() == ' ' || val.back() == '\t' ||
+                            val.back() == '\n' || val.back() == '\r')) {
+        val.pop_back();
+    }
+    return val == "true";
+}
+
+static void loadConfig(DoubaoSettings &s) {
+    std::string json = readConfigFile("doubao.json");
+    if (json.empty()) {
+        fprintf(stderr, "Vinput Doubao: no config found for doubao.json\n");
         return;
     }
-    std::string json((std::istreambuf_iterator<char>(f)),
-                      std::istreambuf_iterator<char>());
-    apiKey = jsonGetString(json, "api_key");
-    resourceId = jsonGetString(json, "resource_id");
+    s.apiKey = jsonGetString(json, "api_key");
+    s.resourceId = jsonGetString(json, "resource_id");
+    std::string v = jsonGetString(json, "model_name");
+    if (!v.empty()) s.modelName = v;
+    s.enableItn = jsonBoolValue(json, "enable_itn", s.enableItn);
+    s.enablePunc = jsonBoolValue(json, "enable_punc", s.enablePunc);
 }
 
 DoubaoAsrProvider::DoubaoAsrProvider() {
-    loadConfig(apiKey_, resourceId_);
     auto adv = advancedSection("doubao");
     if (!adv.empty()) {
         pollIntervalMsec_ = jsonInt(adv, "poll_interval_msec", pollIntervalMsec_);
@@ -150,12 +171,20 @@ DoubaoAsrProvider::~DoubaoAsrProvider() {
 }
 
 void DoubaoAsrProvider::setConfig(const std::string &key, const std::string &value) {
-    if (key == "api_key") apiKey_ = value;
-    else if (key == "resource_id") resourceId_ = value;
+    if (key == "api_key") apiKeyOverride_ = value;
+    else if (key == "resource_id") resourceIdOverride_ = value;
+}
+
+DoubaoSettings DoubaoAsrProvider::resolveSettings() const {
+    DoubaoSettings s;
+    loadConfig(s);
+    if (!apiKeyOverride_.empty()) s.apiKey = apiKeyOverride_;
+    if (!resourceIdOverride_.empty()) s.resourceId = resourceIdOverride_;
+    return s;
 }
 
 void DoubaoAsrProvider::transcribe(std::vector<int16_t> samples, const std::string &wavPath) {
-    Task task{std::move(samples), wavPath, apiKey_, resourceId_,
+    Task task{std::move(samples), wavPath, resolveSettings(),
               pollIntervalMsec_, maxPolls_, submitTimeout_, queryTimeout_,
               std::make_shared<std::atomic_bool>(false), onResult_, onError_,
               diagnosticId_};
@@ -189,7 +218,7 @@ void DoubaoAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
             {"wav_hash", hashDiagnosticValue(task.wavPath).substr(0, 16)}
         });
         processRecording(std::move(task.samples), task.wavPath,
-                         std::move(task.apiKey), std::move(task.resourceId),
+                         task.settings,
                          task.pollIntervalMsec, task.maxPolls,
                          task.submitTimeout, task.queryTimeout,
                          std::move(task.cancel), std::move(task.onResult),
@@ -204,18 +233,20 @@ void DoubaoAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
 
 void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
                                           const std::string &wavPath,
-                                          std::string apiKey,
-                                          std::string resourceId,
+                                          const DoubaoSettings &settings,
                                           int pollIntervalMsec, int maxPolls,
                                           long submitTimeout, long queryTimeout,
                                           std::shared_ptr<std::atomic_bool> cancel,
                                           AsrResultCallback onR,
                                           AsrErrorCallback onE,
                                           uint64_t diagnosticId) {
-    fprintf(stderr, "Vinput Doubao: recorded %zu samples to %s\n",
-            samples.size(), wavPath.c_str());
+    const std::string &apiKey = settings.apiKey;
+    const std::string &resourceId = settings.resourceId;
+    fprintf(stderr, "Vinput Doubao: recorded %zu samples to %s (model_name=%s)\n",
+            samples.size(), wavPath.c_str(), settings.modelName.c_str());
     diagnosticLog().event("provider", "request_started", {
         {"provider", "doubao"}, {"recognition_id", std::to_string(diagnosticId)},
+        {"model", settings.modelName},
         {"wav_hash", hashDiagnosticValue(wavPath).substr(0, 16)},
         {"sample_count", std::to_string(samples.size())}
     });
@@ -272,9 +303,9 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
                 "\"data\":\"" + b64 + "\""
                 "},"
                 "\"request\":{"
-                "\"model_name\":\"bigmodel\","
-                "\"enable_itn\":true,"
-                "\"enable_punc\":true"
+                "\"model_name\":\"" + settings.modelName + "\","
+                "\"enable_itn\":" + std::string(settings.enableItn ? "true" : "false") + ","
+                "\"enable_punc\":" + std::string(settings.enablePunc ? "true" : "false") +
                 "}"
                 "}";
 
