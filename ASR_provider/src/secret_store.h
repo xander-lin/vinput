@@ -141,7 +141,7 @@ inline bool importConfigSecret(const std::string &provider,
         }
         return false;
     }
-    std::string tmp = path + ".tmp";
+    std::string tmp = path + ".tmp." + std::to_string(getpid());
     {
         std::ofstream f(tmp, std::ios::trunc);
         if (!f) {

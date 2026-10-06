@@ -156,7 +156,7 @@ QwenSettings QwenAsrProvider::resolveSettings() {
         s.keepDialect = qjsonRawValue(json, "keep_dialect") == "true";
         s.speakerDiarization =
             qjsonRawValue(json, "speaker_diarization") == "true";
-        timeout_ = jsonInt(json, "timeout_sec", (int)timeout_);
+        s.timeout = jsonInt(json, "timeout_sec", (int)s.timeout);
     }
     s.apiKey = resolveApiKeyLifecycle("qwen", "qwen.json", fileKey,
                                       keyringCache_, apiKeyOverride_);
@@ -164,7 +164,7 @@ QwenSettings QwenAsrProvider::resolveSettings() {
 }
 
 void QwenAsrProvider::transcribe(std::vector<int16_t> samples, const std::string &wavPath) {
-    Task task{std::move(samples), wavPath, timeout_,
+    Task task{std::move(samples), wavPath,
               std::make_shared<std::atomic_bool>(false), onResult_, onError_,
               diagnosticId_};
     {
@@ -197,10 +197,11 @@ void QwenAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
             {"wav_hash", hashDiagnosticValue(task.wavPath).substr(0, 16)}
         });
         // Config (and the API key lifecycle) is resolved on the worker thread
-        // so secret-store calls never block the UI thread.
+        // so secret-store calls never block the UI thread, and config members
+        // are never touched from the UI thread (no cross-thread mutation).
         QwenSettings settings = resolveSettings();
         processRecording(std::move(task.samples), task.wavPath,
-                         settings, task.timeout,
+                         settings,
                          std::move(task.cancel), std::move(task.onResult),
                          std::move(task.onError), task.diagnosticId);
         {
@@ -213,7 +214,7 @@ void QwenAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
 
 void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
                                         const std::string &wavPath,
-                                        const QwenSettings &settings, long timeout,
+                                        const QwenSettings &settings,
                                         std::shared_ptr<std::atomic_bool> cancel,
                                         AsrResultCallback onR,
                                         AsrErrorCallback onE,
@@ -288,8 +289,8 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)requestBody.size());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respBody);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, std::min(timeout, 10L));
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, std::min(settings.timeout, 10L));
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, settings.timeout);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     CurlCancellationScope cancellation(curl, cancel);
 

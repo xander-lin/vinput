@@ -10,6 +10,12 @@ Audio capture and preprocessing are handled by `AudioCapture` before a provider 
 AudioCapture -> samples + wavPath -> IAsrProvider::transcribe() -> onResult/onError
 ```
 
+Errors carry both a detail message and an `AsrErrorCategory`
+(ConfigMissing, AuthRejected, ModelNotFound, LocalSetup, InvalidRequest,
+Network, ServiceUnavailable, Timeout, NoSpeech, EmptyResult, AudioData,
+Runtime, Unknown) so the adapter can show an actionable status per failure
+path; the raw detail is only surfaced for Unknown.
+
 ## Interface
 
 ```cpp

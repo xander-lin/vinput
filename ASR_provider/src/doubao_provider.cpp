@@ -182,10 +182,10 @@ DoubaoSettings DoubaoAsrProvider::resolveSettings() {
         if (!v.empty()) s.modelName = v;
         s.enableItn = jsonBoolValue(json, "enable_itn", s.enableItn);
         s.enablePunc = jsonBoolValue(json, "enable_punc", s.enablePunc);
-        pollIntervalMsec_ = jsonInt(json, "poll_interval_msec", pollIntervalMsec_);
-        maxPolls_ = jsonInt(json, "max_polls", maxPolls_);
-        submitTimeout_ = jsonInt(json, "submit_timeout_sec", (int)submitTimeout_);
-        queryTimeout_ = jsonInt(json, "query_timeout_sec", (int)queryTimeout_);
+        s.pollIntervalMsec = jsonInt(json, "poll_interval_msec", s.pollIntervalMsec);
+        s.maxPolls = jsonInt(json, "max_polls", s.maxPolls);
+        s.submitTimeout = jsonInt(json, "submit_timeout_sec", (int)s.submitTimeout);
+        s.queryTimeout = jsonInt(json, "query_timeout_sec", (int)s.queryTimeout);
     }
     if (!resourceIdOverride_.empty()) s.resourceId = resourceIdOverride_;
     s.apiKey = resolveApiKeyLifecycle("doubao", "doubao.json", fileKey,
@@ -195,7 +195,6 @@ DoubaoSettings DoubaoAsrProvider::resolveSettings() {
 
 void DoubaoAsrProvider::transcribe(std::vector<int16_t> samples, const std::string &wavPath) {
     Task task{std::move(samples), wavPath,
-              pollIntervalMsec_, maxPolls_, submitTimeout_, queryTimeout_,
               std::make_shared<std::atomic_bool>(false), onResult_, onError_,
               diagnosticId_};
     {
@@ -228,12 +227,11 @@ void DoubaoAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
             {"wav_hash", hashDiagnosticValue(task.wavPath).substr(0, 16)}
         });
         // Config (and the API key lifecycle) is resolved on the worker thread
-        // so secret-store calls never block the UI thread.
+        // so secret-store calls never block the UI thread, and config members
+        // are never touched from the UI thread (no cross-thread mutation).
         DoubaoSettings settings = resolveSettings();
         processRecording(std::move(task.samples), task.wavPath,
                          settings,
-                         task.pollIntervalMsec, task.maxPolls,
-                         task.submitTimeout, task.queryTimeout,
                          std::move(task.cancel), std::move(task.onResult),
                          std::move(task.onError), task.diagnosticId);
         {
@@ -247,14 +245,16 @@ void DoubaoAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
 void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
                                           const std::string &wavPath,
                                           const DoubaoSettings &settings,
-                                          int pollIntervalMsec, int maxPolls,
-                                          long submitTimeout, long queryTimeout,
                                           std::shared_ptr<std::atomic_bool> cancel,
                                           AsrResultCallback onR,
                                           AsrErrorCallback onE,
                                           uint64_t diagnosticId) {
     const std::string &apiKey = settings.apiKey;
     const std::string &resourceId = settings.resourceId;
+    const int pollIntervalMsec = settings.pollIntervalMsec;
+    const int maxPolls = settings.maxPolls;
+    const long submitTimeout = settings.submitTimeout;
+    const long queryTimeout = settings.queryTimeout;
     fprintf(stderr, "Vinput Doubao: recorded %zu samples to %s (model_name=%s)\n",
             samples.size(), wavPath.c_str(), settings.modelName.c_str());
     diagnosticLog().event("provider", "request_started", {

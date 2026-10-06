@@ -30,6 +30,7 @@ struct QwenSettings {
     std::string vocabularyId;       // precompiled hotword list id; empty = none
     bool keepDialect = false;       // qwen-audio-3.1-asr-flash: keep dialect text
     bool speakerDiarization = false; // qwen-audio-3.1-asr-flash only
+    long timeout = 60;              // whole-request curl timeout (timeout_sec)
 };
 
 class QwenAsrProvider : public IAsrProvider {
@@ -44,7 +45,6 @@ private:
     struct Task {
         std::vector<int16_t> samples;
         std::string wavPath;
-        long timeout;
         std::shared_ptr<std::atomic_bool> cancel;
         AsrResultCallback onResult;
         AsrErrorCallback onError;
@@ -61,7 +61,7 @@ private:
     void workerLoop(const std::shared_ptr<WorkerState> &state);
     static void processRecording(std::vector<int16_t> samples,
                                  const std::string &wavPath,
-                                 const QwenSettings &settings, long timeout,
+                                 const QwenSettings &settings,
                                  std::shared_ptr<std::atomic_bool> cancel,
                                  AsrResultCallback onR, AsrErrorCallback onE,
                                  uint64_t diagnosticId);
@@ -70,7 +70,6 @@ private:
 
     std::string apiKeyOverride_;   // set via setConfig; wins over everything
     std::string keyringCache_;     // cached keyring lookup (worker thread only)
-    long timeout_ = 60;
     std::shared_ptr<WorkerState> state_;
     std::thread worker_;
 };

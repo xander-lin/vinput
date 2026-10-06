@@ -23,6 +23,10 @@ struct DoubaoSettings {
     std::string modelName = "bigmodel";  // request.model_name
     bool enableItn = true;
     bool enablePunc = true;
+    int pollIntervalMsec = 800;  // query poll interval
+    int maxPolls = 75;           // give up after this many polls
+    long submitTimeout = 30;     // submit request timeout (seconds)
+    long queryTimeout = 15;      // each query request timeout (seconds)
 };
 
 class DoubaoAsrProvider : public IAsrProvider {
@@ -37,10 +41,6 @@ private:
     struct Task {
         std::vector<int16_t> samples;
         std::string wavPath;
-        int pollIntervalMsec;
-        int maxPolls;
-        long submitTimeout;
-        long queryTimeout;
         std::shared_ptr<std::atomic_bool> cancel;
         AsrResultCallback onResult;
         AsrErrorCallback onError;
@@ -58,8 +58,6 @@ private:
     static void processRecording(std::vector<int16_t> samples,
                                  const std::string &wavPath,
                                  const DoubaoSettings &settings,
-                                 int pollIntervalMsec, int maxPolls,
-                                 long submitTimeout, long queryTimeout,
                                  std::shared_ptr<std::atomic_bool> cancel,
                                   AsrResultCallback onR, AsrErrorCallback onE,
                                   uint64_t diagnosticId);
@@ -69,10 +67,6 @@ private:
     std::string apiKeyOverride_;     // set via setConfig; wins over everything
     std::string resourceIdOverride_;
     std::string keyringCache_;       // cached keyring lookup (worker thread only)
-    int pollIntervalMsec_ = 800;
-    int maxPolls_ = 75;
-    long submitTimeout_ = 30;
-    long queryTimeout_ = 15;
     std::shared_ptr<WorkerState> state_;
     std::thread worker_;
 };
