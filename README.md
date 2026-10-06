@@ -27,9 +27,12 @@ To prevent unbounded memory and service requests, at most three recognitions
 Vinput shows `recognition queue full; try again` and discards only the newest
 recording.
 
-Cloud failures are shown in the input panel as actionable errors: missing or
-rejected API key, network, service, timeout, or no-speech. These messages are
-status UI, not text inserted into the application.
+Cloud failures are shown in the input panel as actionable errors, one per
+failure path: missing API key, rejected API key, model not found, local
+engine setup (missing binary/model files), network, service unavailable,
+timeout, no speech, audio capture, and uncategorized failures (which show
+the provider's raw detail). These messages are status UI, not text inserted
+into the application.
 
 ## ASR Backends
 

@@ -11,7 +11,28 @@
 namespace vinput {
 
 using AsrResultCallback = std::function<void(const std::string &text, bool isFinal)>;
-using AsrErrorCallback = std::function<void(const std::string &error)>;
+
+// Error categories reported alongside the detail message. Providers classify
+// at the point of failure where the context is known; the adapter maps each
+// category to an actionable status-panel string and only falls back to the
+// raw detail for Unknown.
+enum class AsrErrorCategory {
+    ConfigMissing,      // api_key / resource_id not configured
+    AuthRejected,       // service rejected the key (401/403/InvalidApiKey)
+    ModelNotFound,      // cloud model id unknown, or local model files missing
+    LocalSetup,         // local engine misconfigured (binary missing, spawn/pipe)
+    InvalidRequest,     // request rejected for other reasons (bad params, 4xx)
+    Network,            // transport failure
+    ServiceUnavailable, // 429/5xx or service rejected submit
+    Timeout,            // recognition timed out
+    NoSpeech,           // service detected silence
+    EmptyResult,        // recognition finished but produced no text
+    AudioData,          // recorded WAV unreadable/empty (internal pipeline)
+    Runtime,            // unexpected local failure (curl init, waitpid...)
+    Unknown,            // last resort; detail message is shown
+};
+
+using AsrErrorCallback = std::function<void(const std::string &error, AsrErrorCategory category)>;
 
 inline void joinAsrWorker(std::thread &worker) {
     if (!worker.joinable()) return;

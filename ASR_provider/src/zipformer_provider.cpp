@@ -4,6 +4,7 @@
 
 #include <unistd.h>
 #include <cerrno>
+#include <cstring>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
@@ -17,6 +18,18 @@
 #include <vector>
 
 namespace vinput {
+
+// Last non-empty line of captured child output, trimmed for error detail.
+static std::string lastOutputLine(std::string output) {
+    while (!output.empty() && (output.back() == '\n' || output.back() == '\r' ||
+                               output.back() == ' ' || output.back() == '\t')) {
+        output.pop_back();
+    }
+    auto pos = output.rfind('\n');
+    std::string line = pos == std::string::npos ? output : output.substr(pos + 1);
+    if (line.size() > 120) line = line.substr(0, 120);
+    return line;
+}
 
 static std::string expandPath(const std::string &p) {
     if (!p.empty() && p[0] == '~') {
@@ -87,9 +100,36 @@ void ZipformerAsrProvider::runTranscribe(const std::string &wav,
     auto t0 = std::chrono::steady_clock::now();
     struct Cleanup { std::string p; ~Cleanup() { unlink(p.c_str()); } } cleanup{wav};
 
+        // Preflight: actionable setup errors before spawning the engine.
+        if (access(sherpaBin.c_str(), X_OK) != 0) {
+            diagnosticLog().event("provider", "request_error", {
+                {"provider", "zipformer"}, {"recognition_id", std::to_string(diagnosticId)},
+                {"reason", "binary_missing"}
+            });
+            if (onE) onE("Zipformer: sherpa-onnx binary not found at " + sherpaBin +
+                         " (set bin_path in ~/.config/vinput/zipformer.json)",
+                         AsrErrorCategory::LocalSetup);
+            return;
+        }
+        for (const char *f : {"encoder-epoch-99-avg-1.onnx",
+                              "decoder-epoch-99-avg-1.onnx",
+                              "joiner-epoch-99-avg-1.onnx", "tokens.txt"}) {
+            std::string full = dir + "/" + f;
+            if (!std::filesystem::exists(full)) {
+                diagnosticLog().event("provider", "request_error", {
+                    {"provider", "zipformer"}, {"recognition_id", std::to_string(diagnosticId)},
+                    {"reason", "model_file_missing"}
+                });
+                if (onE) onE("Zipformer: model file missing: " + full +
+                             " (set model_dir in ~/.config/vinput/zipformer.json)",
+                             AsrErrorCategory::ModelNotFound);
+                return;
+            }
+        }
+
         int pipefd[2];
         if (pipe2(pipefd, O_CLOEXEC) < 0) {
-            if (onE) onE("Zipformer: pipe failed");
+            if (onE) onE("Zipformer: pipe failed", AsrErrorCategory::LocalSetup);
             return;
         }
 
@@ -128,7 +168,8 @@ void ZipformerAsrProvider::runTranscribe(const std::string &wav,
 
         if (ret != 0) {
             close(pipefd[0]);
-            if (onE) onE("Zipformer: spawn failed");
+            if (onE) onE("Zipformer: spawn failed (" + std::string(strerror(ret)) + ")",
+                         AsrErrorCategory::LocalSetup);
             return;
         }
 
@@ -177,7 +218,8 @@ void ZipformerAsrProvider::runTranscribe(const std::string &wav,
                     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
                 }
                 close(pipefd[0]);
-                if (timedOut && onE) onE("Zipformer: recognition timed out");
+                if (timedOut && onE) onE("Zipformer: recognition timed out",
+                                         AsrErrorCategory::Timeout);
                 return;
             }
 
@@ -194,16 +236,25 @@ void ZipformerAsrProvider::runTranscribe(const std::string &wav,
         if (!reaped) {
             fprintf(stderr, "Vinput Zipformer: waitpid failed\n");
             unlink(wav.c_str());
-            if (onE) onE("Zipformer: recognition failed");
+            if (onE) onE("Zipformer: recognition failed (waitpid)",
+                         AsrErrorCategory::Runtime);
             return;
         }
         auto tRecv = std::chrono::steady_clock::now();
 
         if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-            fprintf(stderr, "Vinput Zipformer: child exit=%d\n",
-                    WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+            int exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            fprintf(stderr, "Vinput Zipformer: child exit=%d\n", exitCode);
             unlink(wav.c_str());
-            if (onE) onE("Zipformer: recognition failed");
+            std::string tail = lastOutputLine(output);
+            diagnosticLog().event("provider", "request_error", {
+                {"provider", "zipformer"}, {"recognition_id", std::to_string(diagnosticId)},
+                {"reason", "child_failed"}, {"exit_code", std::to_string(exitCode)}
+            });
+            if (onE) onE("Zipformer: recognition failed (exit=" +
+                         std::to_string(exitCode) +
+                         (tail.empty() ? ")" : "): " + tail),
+                         AsrErrorCategory::Runtime);
             return;
         }
 
@@ -240,7 +291,7 @@ void ZipformerAsrProvider::runTranscribe(const std::string &wav,
                 {"recognition_id", std::to_string(diagnosticId)},
                 {"reason", "empty_result"}
             });
-            onE("Zipformer: empty result");
+            onE("Zipformer: empty result", AsrErrorCategory::EmptyResult);
         }
 }
 

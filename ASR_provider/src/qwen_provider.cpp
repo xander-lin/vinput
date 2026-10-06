@@ -43,6 +43,26 @@ size_t writeCb(void *ptr, size_t size, size_t nmemb, std::string *out) {
     return size * nmemb;
 }
 
+AsrErrorCategory classifyHttpError(long httpCode, const std::string &detail) {
+    if (httpCode == 429 || httpCode >= 500) return AsrErrorCategory::ServiceUnavailable;
+    if (httpCode == 401 || httpCode == 403) return AsrErrorCategory::AuthRejected;
+    std::string lower;
+    lower.reserve(detail.size());
+    for (char c : detail) lower += (char)tolower((unsigned char)c);
+    if (httpCode == 404 ||
+        (lower.find("model") != std::string::npos &&
+         (lower.find("not found") != std::string::npos ||
+          lower.find("notfound") != std::string::npos ||
+          lower.find("not exist") != std::string::npos ||
+          lower.find("doesn't exist") != std::string::npos ||
+          lower.find("does not exist") != std::string::npos ||
+          lower.find("invalid") != std::string::npos ||
+          lower.find("unsupported") != std::string::npos))) {
+        return AsrErrorCategory::ModelNotFound;
+    }
+    return AsrErrorCategory::InvalidRequest;
+}
+
 std::string buildRequestBody(const QwenSettings &s, const std::string &dataUri) {
     std::string model = jsonEscape(s.model);
     if (qwenUsesLegacyRequest(s.model, s.requestStyle)) {
@@ -215,7 +235,8 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
             {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
             {"reason", "missing_api_key"}
         });
-        if (onE) onE("Qwen: missing api_key in ~/.config/vinput/qwen.json");
+        if (onE) onE("Qwen: missing api_key in ~/.config/vinput/qwen.json",
+            AsrErrorCategory::ConfigMissing);
         return;
     }
 
@@ -226,7 +247,7 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
             {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
             {"reason", "wav_read_failed"}
         });
-        if (onE) onE("Qwen: failed to read WAV");
+        if (onE) onE("Qwen: failed to read WAV", AsrErrorCategory::AudioData);
         return;
     }
     std::vector<uint8_t> wavData((std::istreambuf_iterator<char>(wf)),
@@ -236,7 +257,7 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
             {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
             {"reason", "empty_wav"}
         });
-        if (onE) onE("Qwen: empty WAV file");
+        if (onE) onE("Qwen: empty WAV file", AsrErrorCategory::AudioData);
         return;
     }
     std::string b64 = base64Encode(wavData.data(), wavData.size());
@@ -249,7 +270,7 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
             {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
             {"reason", "curl_init_failed"}
         });
-        if (onE) onE("Qwen: curl init failed");
+        if (onE) onE("Qwen: curl init failed", AsrErrorCategory::Runtime);
         return;
     }
     std::string requestBody = buildRequestBody(settings, dataUri);
@@ -298,7 +319,8 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         });
         if (onE) {
             onE("Qwen: network request failed (" +
-                std::string(curl_easy_strerror(res)) + ")");
+                std::string(curl_easy_strerror(res)) + ")",
+                AsrErrorCategory::Network);
         }
         return;
     }
@@ -313,12 +335,13 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         });
         if (onE) {
             std::string suffix = detail.empty() ? "" : " (" + detail + ")";
-            if (httpCode == 429 || httpCode >= 500) {
+            AsrErrorCategory category = classifyHttpError(httpCode, detail);
+            if (category == AsrErrorCategory::ServiceUnavailable) {
                 onE("Qwen: service unavailable (HTTP " +
-                    std::to_string(httpCode) + ")" + suffix);
+                    std::to_string(httpCode) + ")" + suffix, category);
             } else {
                 onE("Qwen: service request failed (HTTP " +
-                    std::to_string(httpCode) + ")" + suffix);
+                    std::to_string(httpCode) + ")" + suffix, category);
             }
         }
         return;
@@ -353,7 +376,8 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
             {"reason", "empty_result"}, {"detail", detail.empty() ? "-" : detail}
         });
         onE(detail.empty() ? "Qwen: empty result"
-                           : "Qwen: empty result (" + detail + ")");
+                           : "Qwen: empty result (" + detail + ")",
+            AsrErrorCategory::EmptyResult);
     }
 }
 

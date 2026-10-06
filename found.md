@@ -81,3 +81,22 @@
 - **Prevention**: In this codebase, never use bare `find("\"key\"")` presence
   checks for JSON semantics — always the scope-aware helpers in
   `qwen_json.h`.
+
+## 5. Tests must isolate HOME from the installed /etc/vinput fallback (found 2026-10)
+
+- **Mistake/context**: After the package was installed system-wide,
+  `test_cloud_provider_queue` started making REAL HTTPS requests to
+  DashScope (HTTP 401 InvalidApiKey): `readConfigFile` copies
+  `/etc/vinput/qwen.json` (which ships the placeholder `sk-YOUR_API_KEY`)
+  into the test HOME when the user file is missing, and the placeholder is
+  a non-empty key, so the provider went to the network.
+- **Root cause**: The config fallback copy is correct production behavior,
+  but tests assumed "missing user config" equals "no config"; they never
+  accounted for a packaged /etc being present on the build machine.
+- **Correction**: Tests that exercise cloud providers write their own
+  qwen.json/doubao.json into the test HOME (empty key + unroutable
+  endpoint) and inject NullSecretStore; local-provider tests create the
+  model files the preflight requires.
+- **Prevention**: Any test touching `readConfigFile` must pre-create every
+  config file it cares about inside its temp HOME; watch for test runtimes
+  that jump (0.4s -> 0.01s here was the network disappearing).

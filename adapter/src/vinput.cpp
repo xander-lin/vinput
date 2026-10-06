@@ -708,31 +708,60 @@ private:
                 });
             });
         });
-        asr_->setErrorCallback([callbackGate, target, recognitionId](const std::string &error) {
-            FCITX_INFO() << "Vinput ASR error: " << error;
+        asr_->setErrorCallback([callbackGate, target, recognitionId](const std::string &error,
+                                                                     vinput::AsrErrorCategory category) {
+            FCITX_INFO() << "Vinput ASR error: " << error
+                         << " (category=" << (int)category << ")";
             vinput::diagnosticLog().event("adapter", "recognition_error_callback", {
                 {"recognition_id", std::to_string(recognitionId)},
+                {"category", std::to_string((int)category)},
                 {"error_length", std::to_string(error.size())},
                 {"error_hash", diagnosticHash(error)}
             });
-            std::string status = "Vinput: recognition failed";
-            if (error.find("missing api_key") != std::string::npos ||
-                error.find("missing api_key or resource_id") != std::string::npos) {
+            std::string status;
+            switch (category) {
+            case vinput::AsrErrorCategory::ConfigMissing:
                 status = "Vinput: API key missing; see ~/.config/vinput";
-            } else if (error.find("InvalidApiKey") != std::string::npos ||
-                       error.find("invalid api") != std::string::npos ||
-                       error.find("HTTP 401") != std::string::npos ||
-                       error.find("HTTP 403") != std::string::npos) {
+                break;
+            case vinput::AsrErrorCategory::AuthRejected:
                 status = "Vinput: API key rejected; check provider config";
-            } else if (error.find("network") != std::string::npos) {
+                break;
+            case vinput::AsrErrorCategory::ModelNotFound:
+                status = "Vinput: model not found; check provider config";
+                break;
+            case vinput::AsrErrorCategory::LocalSetup:
+                status = "Vinput: local engine setup error; check bin_path config";
+                break;
+            case vinput::AsrErrorCategory::Network:
                 status = "Vinput: network error; try again";
-            } else if (error.find("timed out") != std::string::npos) {
-                status = "Vinput: recognition timed out; try again";
-            } else if (error.find("service unavailable") != std::string::npos) {
+                break;
+            case vinput::AsrErrorCategory::ServiceUnavailable:
                 status = "Vinput: recognition service unavailable; try again";
-            } else if (error.find("no speech") != std::string::npos ||
-                       error.find("empty result") != std::string::npos) {
+                break;
+            case vinput::AsrErrorCategory::Timeout:
+                status = "Vinput: recognition timed out; try again";
+                break;
+            case vinput::AsrErrorCategory::NoSpeech:
+            case vinput::AsrErrorCategory::EmptyResult:
                 status = "Vinput: no speech recognized";
+                break;
+            case vinput::AsrErrorCategory::AudioData:
+                status = "Vinput: audio capture error";
+                break;
+            case vinput::AsrErrorCategory::InvalidRequest:
+            case vinput::AsrErrorCategory::Runtime:
+            case vinput::AsrErrorCategory::Unknown:
+            default: {
+                // Last resort: surface the provider's detail so nothing is a
+                // dead-end "failed". Collapse to one trimmed line.
+                std::string detail = error;
+                for (char &c : detail) {
+                    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+                }
+                if (detail.size() > 120) detail = detail.substr(0, 120) + "...";
+                status = "Vinput: " + detail;
+                break;
+            }
             }
             withOwner(callbackGate, [&](VinputAddon &owner) {
                 owner.outputHandler_->showStatus(target, status, [callbackGate] {

@@ -39,6 +39,12 @@ void writeConfig(const std::filesystem::path &path,
     config << "{\"model_dir\":\"" << root.string()
            << "\",\"bin_path\":\"" << fakeSherpa.string()
            << "\",\"num_threads\":1,\"timeout_sec\":3}\n";
+    // The provider preflight requires the model files to exist; the fake
+    // sherpa binary never reads them.
+    for (const char *f : {"encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"}) {
+        std::ofstream m(root / f);
+        m << "placeholder";
+    }
 }
 
 bool testNormalCompletion(const std::filesystem::path &root,
@@ -61,7 +67,7 @@ bool testNormalCompletion(const std::filesystem::path &root,
         completed = true;
         ready.notify_one();
     });
-    provider->setErrorCallback([&](const std::string &message) {
+    provider->setErrorCallback([&](const std::string &message, vinput::AsrErrorCategory) {
         std::lock_guard<std::mutex> lock(mutex);
         error = message;
         completed = true;

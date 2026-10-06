@@ -28,7 +28,7 @@ bool testProvider(const std::filesystem::path &root, const std::string &name) {
         auto path = root / (name + "-" + std::to_string(i) + ".wav");
         std::ofstream(path) << "placeholder";
         paths.push_back(path);
-        provider.setErrorCallback([&, i](const std::string &) {
+        provider.setErrorCallback([&, i](const std::string &, vinput::AsrErrorCategory) {
             std::lock_guard<std::mutex> lock(mutex);
             order.push_back(i);
             threads.push_back(std::this_thread::get_id());
@@ -90,6 +90,14 @@ int main() {
     setenv("HOME", root.c_str(), 1);
     // Headless test environment: never touch the desktop secret store.
     vinput::setActiveSecretStore(std::make_unique<vinput::NullSecretStore>());
+    // Isolate from the installed /etc/vinput fallback (which carries a
+    // placeholder api_key and would trigger real network requests).
+    {
+        std::ofstream q(root / ".config/vinput/qwen.json");
+        q << "{\"api_key\":\"\",\"endpoint\":\"http://127.0.0.1:1/x\"}\n";
+        std::ofstream d(root / ".config/vinput/doubao.json");
+        d << "{\"api_key\":\"\",\"resource_id\":\"\"}\n";
+    }
 
     return testProvider<vinput::DoubaoAsrProvider>(root, "doubao") &&
                    testProvider<vinput::QwenAsrProvider>(root, "qwen") &&
