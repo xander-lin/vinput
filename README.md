@@ -27,9 +27,9 @@ To prevent unbounded memory and service requests, at most three recognitions
 Vinput shows `recognition queue full; try again` and discards only the newest
 recording.
 
-Cloud failures are shown in the input panel as network, service, timeout,
-microphone, or no-speech errors. These messages are status UI, not text
-inserted into the application.
+Cloud failures are shown in the input panel as actionable errors: missing or
+rejected API key, network, service, timeout, or no-speech. These messages are
+status UI, not text inserted into the application.
 
 ## ASR Backends
 

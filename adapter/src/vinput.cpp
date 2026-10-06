@@ -716,7 +716,15 @@ private:
                 {"error_hash", diagnosticHash(error)}
             });
             std::string status = "Vinput: recognition failed";
-            if (error.find("network") != std::string::npos) {
+            if (error.find("missing api_key") != std::string::npos ||
+                error.find("missing api_key or resource_id") != std::string::npos) {
+                status = "Vinput: API key missing; see ~/.config/vinput";
+            } else if (error.find("InvalidApiKey") != std::string::npos ||
+                       error.find("invalid api") != std::string::npos ||
+                       error.find("HTTP 401") != std::string::npos ||
+                       error.find("HTTP 403") != std::string::npos) {
+                status = "Vinput: API key rejected; check provider config";
+            } else if (error.find("network") != std::string::npos) {
                 status = "Vinput: network error; try again";
             } else if (error.find("timed out") != std::string::npos) {
                 status = "Vinput: recognition timed out; try again";

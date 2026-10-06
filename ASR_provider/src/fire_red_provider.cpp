@@ -246,6 +246,17 @@ std::unique_ptr<IAsrProvider> FireRedAsrProviderFactory::create() {
     return std::make_unique<FireRedAsrProvider>();
 }
 
+std::string FireRedAsrProviderFactory::displayName() const {
+    std::string dir = "~/.local/share/vinput/models/sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26";
+    std::string cfg = readConfigFile("fire_red.json");
+    if (!cfg.empty()) {
+        auto d = jsonStr(cfg, "model_dir");
+        if (!d.empty()) dir = d;
+    }
+    std::filesystem::path p(expandPath(dir));
+    return "FireRed · " + p.filename().string() + " (local)";
+}
+
 static bool _frReg = []() {
     AsrProviderRegistry::instance().registerFactory(
         std::make_unique<FireRedAsrProviderFactory>());

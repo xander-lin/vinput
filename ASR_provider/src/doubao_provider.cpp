@@ -559,6 +559,16 @@ std::unique_ptr<IAsrProvider> DoubaoAsrProviderFactory::create() {
     return std::make_unique<DoubaoAsrProvider>();
 }
 
+std::string DoubaoAsrProviderFactory::displayName() const {
+    std::string model = "bigmodel";
+    std::string json = readConfigFile("doubao.json");
+    if (!json.empty()) {
+        std::string v = jsonGetString(json, "model_name");
+        if (!v.empty()) model = v;
+    }
+    return "Doubao · " + model;
+}
+
 static struct CurlInit {
     CurlInit() { curl_global_init(CURL_GLOBAL_ALL); }
     ~CurlInit() { curl_global_cleanup(); }

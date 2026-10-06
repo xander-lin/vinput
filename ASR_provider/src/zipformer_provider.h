@@ -39,6 +39,8 @@ class ZipformerAsrProviderFactory : public IAsrProviderFactory {
 public:
     std::string id() const override { return "zipformer"; }
     std::string name() const override { return "Zipformer (sherpa-onnx)"; }
+    // "Zipformer · <model dir basename from zipformer.json> (local)"
+    std::string displayName() const override;
     std::unique_ptr<IAsrProvider> create() override;
 };
 

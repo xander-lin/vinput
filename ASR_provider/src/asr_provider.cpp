@@ -16,7 +16,7 @@ std::vector<std::pair<std::string, std::string>>
 AsrProviderRegistry::listFactories() const {
     std::vector<std::pair<std::string, std::string>> list;
     for (auto &f : factories_) {
-        list.emplace_back(f->id(), f->name());
+        list.emplace_back(f->id(), f->displayName());
     }
     return list;
 }

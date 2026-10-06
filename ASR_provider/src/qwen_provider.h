@@ -79,6 +79,8 @@ class QwenAsrProviderFactory : public IAsrProviderFactory {
 public:
     std::string id() const override { return "qwen"; }
     std::string name() const override { return "Qwen ASR (Alibaba DashScope)"; }
+    // "Qwen · <model from qwen.json>"
+    std::string displayName() const override;
     std::unique_ptr<IAsrProvider> create() override;
 };
 

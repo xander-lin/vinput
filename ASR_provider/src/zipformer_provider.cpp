@@ -248,6 +248,17 @@ std::unique_ptr<IAsrProvider> ZipformerAsrProviderFactory::create() {
     return std::make_unique<ZipformerAsrProvider>();
 }
 
+std::string ZipformerAsrProviderFactory::displayName() const {
+    std::string dir = "~/.local/share/vinput/models/zipformer-zh-en";
+    std::string cfg = readConfigFile("zipformer.json");
+    if (!cfg.empty()) {
+        auto d = jsonStr(cfg, "model_dir");
+        if (!d.empty()) dir = d;
+    }
+    std::filesystem::path p(expandPath(dir));
+    return "Zipformer · " + p.filename().string() + " (local)";
+}
+
 static bool _zipReg = []() {
     AsrProviderRegistry::instance().registerFactory(
         std::make_unique<ZipformerAsrProviderFactory>());

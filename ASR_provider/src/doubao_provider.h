@@ -81,6 +81,8 @@ class DoubaoAsrProviderFactory : public IAsrProviderFactory {
 public:
     std::string id() const override { return "doubao"; }
     std::string name() const override { return "Doubao (ByteDance)"; }
+    // "Doubao · <model_name from doubao.json>"
+    std::string displayName() const override;
     std::unique_ptr<IAsrProvider> create() override;
 };
 

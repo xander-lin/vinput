@@ -361,6 +361,16 @@ std::unique_ptr<IAsrProvider> QwenAsrProviderFactory::create() {
     return std::make_unique<QwenAsrProvider>();
 }
 
+std::string QwenAsrProviderFactory::displayName() const {
+    std::string model = kDefaultQwenModel;
+    std::string json = readConfigFile("qwen.json");
+    if (!json.empty()) {
+        std::string v = qjsonStringValue(json, "model");
+        if (!v.empty()) model = v;
+    }
+    return "Qwen · " + model;
+}
+
 static struct CurlInit {
     CurlInit() { curl_global_init(CURL_GLOBAL_ALL); }
     ~CurlInit() { curl_global_cleanup(); }

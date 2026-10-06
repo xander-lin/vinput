@@ -58,6 +58,11 @@ public:
     virtual ~IAsrProviderFactory() = default;
     virtual std::string id() const = 0;
     virtual std::string name() const = 0;
+    // Detailed label shown in the switch notification (Ctrl+CapsLock ←/→).
+    // Default is name(); factories whose model comes from a config file
+    // override this to include the currently configured model ID so the
+    // notification reflects what will actually run.
+    virtual std::string displayName() const { return name(); }
     virtual std::unique_ptr<IAsrProvider> create() = 0;
 };
 

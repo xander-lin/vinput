@@ -39,6 +39,8 @@ class FireRedAsrProviderFactory : public IAsrProviderFactory {
 public:
     std::string id() const override { return "fire_red"; }
     std::string name() const override { return "FireRed ASR (sherpa-onnx)"; }
+    // "FireRed · <model dir basename from fire_red.json> (local)"
+    std::string displayName() const override;
     std::unique_ptr<IAsrProvider> create() override;
 };
 
