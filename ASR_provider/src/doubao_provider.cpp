@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <algorithm>
 #include <cmath>
 #include <chrono>
 #include <thread>
@@ -16,6 +17,9 @@
 #include <memory>
 
 namespace vinput {
+
+// Query poll cadence; retired from config with the other tuning knobs.
+constexpr int kDoubaoPollIntervalMsec = 800;
 
 static bool waitCancelable(const std::shared_ptr<std::atomic_bool> &cancel,
                            int milliseconds) {
@@ -191,10 +195,7 @@ DoubaoSettings DoubaoAsrProvider::resolveSettings() {
             if (!v.empty()) s.modelName = v;
             s.enableItn = jsonBoolValue(json, "enable_itn", s.enableItn);
             s.enablePunc = jsonBoolValue(json, "enable_punc", s.enablePunc);
-            s.pollIntervalMsec = jsonInt(json, "poll_interval_msec", s.pollIntervalMsec);
-            s.maxPolls = jsonInt(json, "max_polls", s.maxPolls);
-            s.submitTimeout = jsonInt(json, "submit_timeout_sec", (int)s.submitTimeout);
-            s.queryTimeout = jsonInt(json, "query_timeout_sec", (int)s.queryTimeout);
+            s.timeout = jsonInt(json, "timeout_sec", (int)s.timeout);
         }
     }
     if (!resourceIdOverride_.empty()) s.resourceId = resourceIdOverride_;
@@ -260,10 +261,16 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
                                           uint64_t diagnosticId) {
     const std::string &apiKey = settings.apiKey;
     const std::string &resourceId = settings.resourceId;
-    const int pollIntervalMsec = settings.pollIntervalMsec;
-    const int maxPolls = settings.maxPolls;
-    const long submitTimeout = settings.submitTimeout;
-    const long queryTimeout = settings.queryTimeout;
+    // Single whole-recognition budget (timeout_sec): submit + polling share
+    // one deadline; per-request curl timeouts are capped slices of it.
+    const int pollIntervalMsec = kDoubaoPollIntervalMsec;
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(settings.timeout);
+    auto remainingSec = [&deadline]() {
+        auto left = std::chrono::duration_cast<std::chrono::seconds>(
+                        deadline - std::chrono::steady_clock::now()).count();
+        return left < 0 ? 0L : (long)left;
+    };
     fprintf(stderr, "Vinput Doubao: recorded %zu samples to %s (model_name=%s)\n",
             samples.size(), wavPath.c_str(), settings.modelName.c_str());
     diagnosticLog().event("provider", "request_started", {
@@ -361,6 +368,7 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respBody);
             curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCb);
             curl_easy_setopt(curl, CURLOPT_HEADERDATA, &respHdr);
+            const long submitTimeout = std::max(1L, std::min(30L, remainingSec()));
             curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
                              std::min(submitTimeout, 10L));
             curl_easy_setopt(curl, CURLOPT_TIMEOUT, submitTimeout);
@@ -424,12 +432,12 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
         int consecutiveNetworkErrors = 0;
         CURLcode lastQueryError = CURLE_OK;
         long lastQueryHttpCode = 0;
-        for (int pollCount = 1; pollCount <= maxPolls; pollCount++) {
-            int pollDelay = pollIntervalMsec;
-            if (pollIntervalMsec > 300) {
-                if (pollCount == 1) pollDelay = 300;
-                else if (pollCount == 2) pollDelay = pollIntervalMsec - 300;
-            }
+        for (int pollCount = 1;; pollCount++) {
+            if (remainingSec() <= 0) break;  // budget spent -> timeout below
+            // Fixed cadence with fast first polls (300 ms, then 500 ms).
+            int pollDelay = pollCount == 1   ? 300
+                          : pollCount == 2   ? pollIntervalMsec - 300
+                                             : pollIntervalMsec;
             if (!waitCancelable(cancel, pollDelay)) {
                 diagnosticLog().event("provider", "request_cancelled", {
                     {"provider", "doubao"},
@@ -468,6 +476,7 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &respBody);
             curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headerCb);
             curl_easy_setopt(curl, CURLOPT_HEADERDATA, &respHdr);
+            const long queryTimeout = std::max(1L, std::min(15L, remainingSec()));
             curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
                              std::min(queryTimeout, 10L));
             curl_easy_setopt(curl, CURLOPT_TIMEOUT, queryTimeout);

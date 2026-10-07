@@ -60,16 +60,13 @@ sudo meson install -C build
 
 ### 2. Configure (cloud ASR)
 
-The package installs default config files to `/etc/vinput/`. Existing edited files under `/etc/vinput/` are preserved by pacman on upgrade.
-
-Per-user files under `~/.config/vinput/` override `/etc/vinput/`. Missing per-user config files are created from `/etc/vinput/` when Vinput first reads them.
+Defaults are built into the code; config files under `~/.config/vinput/` are optional and sparse. Copy only what you need, and keep in mind every file supports `//` comments:
 
 ```bash
 mkdir -p ~/.config/vinput
 
 # Copy tracked examples, then edit local files under ~/.config/vinput/
-cp config/vinput.json.example ~/.config/vinput/vinput.json
-cp config/audio.json.example ~/.config/vinput/audio.json
+cp config/config.json.example ~/.config/vinput/config.json
 cp config/qwen.json.example ~/.config/vinput/qwen.json
 cp config/doubao.json.example ~/.config/vinput/doubao.json
 
@@ -152,11 +149,20 @@ rm *.tar.bz2
 
 ## Configuration
 
-Config is loaded from `~/.config/vinput/` first, then `/etc/vinput/`. If a user config file is missing and the packaged `/etc/vinput/` file exists, Vinput copies it to `~/.config/vinput/` without overwriting existing files. See man page: `man vinput`
+All user config lives in `~/.config/vinput/`; defaults are built into the code, so files are **optional and sparse** — copy only what you want to change. Every file supports `//` line comments. There is no `/etc` layer. See man page: `man vinput`
 
-Tracked files under `config/*.json.example` are examples only. Runtime `*.json` files are ignored by Git and should stay under `~/.config/vinput/`.
+Tracked files under `config/*.example` are commented examples only. Runtime `*.json` files are ignored by Git and should stay under `~/.config/vinput/`.
 
-Every provider config is re-read before each recognition, so model and parameter changes apply on the next recording without restarting fcitx5.
+```
+~/.config/vinput/
+├── config.json        # provider selection + [ui] + [audio]
+├── qwen.json          # cloud providers: api_key, model, ...
+├── doubao.json
+├── zipformer.json     # local providers: model_dir, ...
+└── fire_red.json
+```
+
+Cloud provider configs are re-read before each recognition, so model and parameter changes apply on the next recording without restarting fcitx5. `Ctrl+CapsLock` provider switching writes the selection back into `config.json`'s `"provider"` line.
 
 ### User-facing (must configure)
 
@@ -169,10 +175,9 @@ Every provider config is re-read before each recognition, so model and parameter
 
 | File | Purpose |
 |------|---------|
-| `vinput.json` | Interaction tuning: activation delay, notifications, debounce |
-| `audio.json` | Denoiser (`"none"` \| `"speexdsp"` \| `"deepfilter"`) and audio tuning |
-| `zipformer.json` | Local Zipformer: model dir, binary, threads, timeout |
-| `fire_red.json` | Local FireRed: model dir, binary, threads, timeout |
+| `config.json` | Active provider (rewritten by `Ctrl+CapsLock`), `[ui]` hotkey/notification tuning, `[audio]` denoiser + audio tuning |
+| `zipformer.json` | Local Zipformer: model dir, binary, timeout |
+| `fire_red.json` | Local FireRed: model dir, binary, timeout |
 
 ### API key security
 
@@ -186,14 +191,16 @@ Every config file is validated on read: JSON syntax errors (with byte
 offset) show in the input panel and disable the file's values; unknown
 fields get a "did you mean" suggestion, type mismatches and missing
 required fields are reported — warnings appear in the fcitx5 log and as a
-`⚠` line in the provider switch notification.
+`⚠` line in the provider switch notification. Retired fields (e.g.
+`request_style`, `max_polls`, `num_threads`) are flagged so stale files
+tell you they do nothing.
 
 ### Cloud polling
 
-`doubao.json` tunes the async result polling. `poll_interval_msec` is the
-normal polling interval (default `800`); the first query is made after 300ms
-to reduce short-utterance latency, then the normal interval is restored. Keep
-the default unless the API's QPS limit requires a slower cadence.
+Doubao's submit + result polling share one deadline: `timeout_sec` (default
+`90`) is the whole-recognition budget. The poll cadence is fixed in code —
+first query after 300 ms, then 500 ms, then 800 ms — which keeps short
+utterances fast without exposing knobs nobody should turn.
 
 ## Dependencies
 

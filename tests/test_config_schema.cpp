@@ -129,7 +129,7 @@ void testSchemas() {
     // zipformer and fire_red share the local-model schema.
     auto local = vinput::localModelConfigSchema();
     auto zip = vinput::validateConfigJson(
-        "{\"model_dir\": \"~/.local/x\", \"num_threads\": 30, \"timeout_sec\": 120, "
+        "{\"model_dir\": \"~/.local/x\", \"timeout_sec\": 120, "
         "\"bin_path\": \"~/.local/bin\"}", local);
     check(zip.empty(), "zipformer example validates");
 }
@@ -144,6 +144,73 @@ void testNearest() {
           "no suggestion for unrelated names");
 }
 
+void testPrunedFields() {
+    // Tuning knobs retired from the schemas in the 2026-10 restructure must
+    // now be flagged, so stale files tell the user they do nothing.
+    auto issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"request_style\": \"legacy\"}",
+        vinput::qwenConfigSchema());
+    check(hasIssue(issues, "unknown field \"request_style\"", false),
+          "qwen request_style retired");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": \"k\", \"resource_id\": \"r\", \"max_polls\": 10}",
+        vinput::doubaoConfigSchema());
+    check(hasIssue(issues, "unknown field \"max_polls\"", false),
+          "doubao poll knobs retired");
+
+    issues = vinput::validateConfigJson(
+        "{\"model_dir\": \"~/.local/x\", \"num_threads\": 4}",
+        vinput::localModelConfigSchema());
+    check(hasIssue(issues, "unknown field \"num_threads\"", false),
+          "local num_threads retired");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": \"k\", \"resource_id\": \"r\", \"timeout_sec\": 60}",
+        vinput::doubaoConfigSchema());
+    check(issues.empty(), "doubao single timeout_sec accepted");
+}
+
+void testConfigFileSections() {
+    const char *good =
+        "{\n"
+        "    \"provider\": \"qwen\",\n"
+        "    \"ui\": { \"activation_msec\": 300 },\n"
+        "    \"audio\": { \"denoise\": \"speexdsp\", \"crest_threshold\": 0.0 }\n"
+        "}\n";
+    check(vinput::validateConfigFileJson(good).empty(),
+          "valid config.json passes");
+
+    // Unknown top-level key, unknown key inside [audio], bad type in [ui].
+    const char *bad =
+        "{\n"
+        "    \"provider\": \"qwen\",\n"
+        "    \"hotkey\": { \"activation_msec\": 300 },\n"
+        "    \"audio\": { \"denois\": \"speexdsp\" },\n"
+        "    \"ui\": { \"activation_msec\": \"soon\" }\n"
+        "}\n";
+    auto issues = vinput::validateConfigFileJson(bad);
+    check(hasIssue(issues, "unknown field \"hotkey\"", false),
+          "unknown top-level section flagged");
+    check(hasIssue(issues, "[audio] unknown field \"denois\"", false),
+          "audio section issue carries [audio] prefix");
+    check(hasIssue(issues, "[audio] unknown field \"denois\" (did you mean \"denoise\"?)", false),
+          "audio section typo suggestion");
+    check(hasIssue(issues, "[ui] field \"activation_msec\" expects an integer", false),
+          "ui section type mismatch");
+
+    // Missing required top-level provider.
+    issues = vinput::validateConfigFileJson(
+        "{\"ui\": {\"activation_msec\": 300}}");
+    check(hasIssue(issues, "missing required field \"provider\"", false),
+          "missing provider flagged");
+
+    // Syntax error stays fatal for the whole file.
+    issues = vinput::validateConfigFileJson("{\"provider\": ");
+    check(issues.size() == 1 && issues[0].fatal,
+          "config.json syntax error is fatal");
+}
+
 } // namespace
 
 int main() {
@@ -154,6 +221,8 @@ int main() {
     testTopLevelKeys();
     testSchemas();
     testNearest();
+    testPrunedFields();
+    testConfigFileSections();
     if (failures) {
         std::cerr << failures << " check(s) failed\n";
         return 1;

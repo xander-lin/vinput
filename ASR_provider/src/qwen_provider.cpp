@@ -65,7 +65,7 @@ AsrErrorCategory classifyHttpError(long httpCode, const std::string &detail) {
 
 std::string buildRequestBody(const QwenSettings &s, const std::string &dataUri) {
     std::string model = jsonEscape(s.model);
-    if (qwenUsesLegacyRequest(s.model, s.requestStyle)) {
+    if (qwenUsesLegacyRequest(s.model)) {
         return "{"
                "\"model\":\"" + model + "\","
                "\"input\":{"
@@ -139,7 +139,6 @@ QwenSettings QwenAsrProvider::resolveSettings() {
     QwenSettings s;
     s.model = kDefaultQwenModel;
     s.endpoint = kDefaultQwenEndpoint;
-    s.requestStyle = "auto";
     std::string fileKey;
     std::string json = readConfigFile("qwen.json");
     if (!json.empty()) {
@@ -157,8 +156,6 @@ QwenSettings QwenAsrProvider::resolveSettings() {
             if (!v.empty()) s.model = v;
             v = qjsonStringValue(json, "endpoint");
             if (!v.empty()) s.endpoint = v;
-            v = qjsonStringValue(json, "request_style");
-            if (!v.empty()) s.requestStyle = v;
             s.languageHintsRaw = qjsonRawValue(json, "language_hints");
             s.vocabularyRaw = qjsonRawValue(json, "vocabulary");
             s.vocabularyId = qjsonStringValue(json, "vocabulary_id");
@@ -230,7 +227,7 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
                                         uint64_t diagnosticId) {
     fprintf(stderr, "Vinput Qwen: recorded %zu samples to %s (model=%s style=%s)\n",
             samples.size(), wavPath.c_str(), settings.model.c_str(),
-            qwenUsesLegacyRequest(settings.model, settings.requestStyle)
+            qwenUsesLegacyRequest(settings.model)
                 ? "legacy" : "input_audio");
     diagnosticLog().event("provider", "request_started", {
         {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},

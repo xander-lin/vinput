@@ -21,7 +21,6 @@ struct QwenSettings {
     std::string apiKey;             // resolved key (override > file)
     std::string model;
     std::string endpoint;
-    std::string requestStyle;       // "auto" (default) | "input_audio" | "legacy"
     std::string languageHintsRaw;   // raw JSON array, e.g. ["zh","en"]; empty = auto
     std::string vocabularyRaw;      // raw JSON object {word: weight}; empty = none
     std::string vocabularyId;       // precompiled hotword list id; empty = none

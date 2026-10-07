@@ -340,13 +340,39 @@ inline std::vector<ConfigIssue> validateConfigJson(
     return issues;
 }
 
-// Shared schemas for the per-concern config files.
+// Shared schemas for the config files. Layout (since 2026-10):
+//   ~/.config/vinput/config.json  — provider selection + "ui" + "audio"
+//   ~/.config/vinput/<provider>.json — qwen / doubao / zipformer / fire_red
+inline std::vector<ConfigField> configFileSchema() {
+    return {
+        {"provider", ConfigFieldType::String, true},
+        {"ui", ConfigFieldType::Object, false},
+        {"audio", ConfigFieldType::Object, false},
+    };
+}
+
+inline std::vector<ConfigField> uiConfigSchema() {
+    return {
+        {"activation_msec", ConfigFieldType::Int, false},
+        {"notification_timeout", ConfigFieldType::Int, false},
+        {"debounce_count", ConfigFieldType::Int, false},
+    };
+}
+
+inline std::vector<ConfigField> audioConfigSchema() {
+    return {
+        {"denoise", ConfigFieldType::String, false},
+        {"lufs_target", ConfigFieldType::Double, false},
+        {"speex_level", ConfigFieldType::Int, false},
+        {"crest_threshold", ConfigFieldType::Double, false},
+    };
+}
+
 inline std::vector<ConfigField> qwenConfigSchema() {
     return {
         {"api_key", ConfigFieldType::String, true},
         {"model", ConfigFieldType::String, false},
         {"endpoint", ConfigFieldType::String, false},
-        {"request_style", ConfigFieldType::String, false},
         {"language_hints", ConfigFieldType::StringArray, false},
         {"vocabulary", ConfigFieldType::Object, false},
         {"vocabulary_id", ConfigFieldType::String, false},
@@ -363,37 +389,39 @@ inline std::vector<ConfigField> doubaoConfigSchema() {
         {"model_name", ConfigFieldType::String, false},
         {"enable_itn", ConfigFieldType::Bool, false},
         {"enable_punc", ConfigFieldType::Bool, false},
-        {"poll_interval_msec", ConfigFieldType::Int, false},
-        {"max_polls", ConfigFieldType::Int, false},
-        {"submit_timeout_sec", ConfigFieldType::Int, false},
-        {"query_timeout_sec", ConfigFieldType::Int, false},
-    };
-}
-
-inline std::vector<ConfigField> audioConfigSchema() {
-    return {
-        {"denoise", ConfigFieldType::String, false},
-        {"lufs_target", ConfigFieldType::Double, false},
-        {"speex_level", ConfigFieldType::Int, false},
-        {"crest_threshold", ConfigFieldType::Double, false},
-    };
-}
-
-inline std::vector<ConfigField> vinputConfigSchema() {
-    return {
-        {"activation_msec", ConfigFieldType::Int, false},
-        {"notification_timeout", ConfigFieldType::Int, false},
-        {"debounce_count", ConfigFieldType::Int, false},
+        {"timeout_sec", ConfigFieldType::Int, false},
     };
 }
 
 inline std::vector<ConfigField> localModelConfigSchema() {
     return {
         {"model_dir", ConfigFieldType::String, false},
-        {"num_threads", ConfigFieldType::Int, false},
         {"timeout_sec", ConfigFieldType::Int, false},
         {"bin_path", ConfigFieldType::String, false},
     };
+}
+
+// Validate config.json as a whole: top-level keys plus the "ui" and "audio"
+// sections. Section issues are prefixed so the file and section are obvious.
+inline std::vector<ConfigIssue> validateConfigFileJson(const std::string &json) {
+    auto issues = validateConfigJson(json, configFileSchema());
+    if (!issues.empty() && issues.front().fatal) return issues;
+    struct Section {
+        const char *name;
+        std::vector<ConfigField> schema;
+    };
+    for (const Section &sec : {
+             Section{"audio", audioConfigSchema()},
+             Section{"ui", uiConfigSchema()},
+         }) {
+        std::string raw = qjsonRawValue(json, sec.name);
+        if (raw.empty()) continue;
+        for (auto &issue : validateConfigJson(raw, sec.schema)) {
+            issue.message = std::string("[") + sec.name + "] " + issue.message;
+            issues.push_back(issue);
+        }
+    }
+    return issues;
 }
 
 // Report issues to stderr (always) and the diagnostic log. Called by every

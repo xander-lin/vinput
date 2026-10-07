@@ -435,12 +435,163 @@ inline bool qwenIsLegacyModel(const std::string &model) {
            model.rfind("qwen2-asr", 0) == 0;
 }
 
-// requestStyle: "auto" (default, family detection) | "input_audio" | "legacy".
-inline bool qwenUsesLegacyRequest(const std::string &model,
-                                  const std::string &requestStyle) {
-    if (requestStyle == "legacy") return true;
-    if (requestStyle == "input_audio") return false;
+inline bool qwenUsesLegacyRequest(const std::string &model) {
     return qwenIsLegacyModel(model);
+}
+
+// Strip // line comments: comment bytes become spaces (newlines kept), so the
+// result has the exact same length and byte offsets as the original — syntax
+// error offsets still point at the user's file. '/' inside a string value
+// (e.g. "https://dashscope.aliyuncs.com") is never treated as a comment.
+inline std::string qjsonStripComments(const std::string &json) {
+    std::string out = json;
+    bool inString = false;
+    for (size_t i = 0; i < out.size(); i++) {
+        char c = out[i];
+        if (inString) {
+            if (c == '\\') { i++; continue; }
+            if (c == '"') inString = false;
+            continue;
+        }
+        if (c == '"') { inString = true; continue; }
+        if (c == '/' && i + 1 < out.size() && out[i + 1] == '/') {
+            while (i < out.size() && out[i] != '\n') {
+                out[i] = ' ';
+                i++;
+            }
+            // keep the newline itself
+        }
+    }
+    return out;
+}
+
+// Locate a top-level property's value span [valStart, valEnd). Returns false
+// when the key is absent. String-aware; only looks at the root object.
+inline bool qjsonFindTopLevelProperty(const std::string &json,
+                                      const std::string &key,
+                                      size_t &valStart, size_t &valEnd) {
+    size_t obj = json.find('{');
+    if (obj == std::string::npos) return false;
+    size_t pos = obj + 1;
+    while (pos < json.size()) {
+        // next key
+        while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                     json[pos] == '\n' || json[pos] == '\r' ||
+                                     json[pos] == ',')) {
+            pos++;
+        }
+        if (pos >= json.size() || json[pos] == '}') return false;
+        if (json[pos] != '"') return false;
+        size_t keyEnd = qjsonSkipString(json, pos);
+        if (keyEnd == std::string::npos) return false;
+        std::string name = json.substr(pos + 1, keyEnd - pos - 2);
+        pos = keyEnd;
+        while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                     json[pos] == '\n' || json[pos] == '\r')) {
+            pos++;
+        }
+        if (pos >= json.size() || json[pos] != ':') return false;
+        pos++;
+        while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                     json[pos] == '\n' || json[pos] == '\r')) {
+            pos++;
+        }
+        if (pos >= json.size()) return false;
+        valStart = pos;
+        // value end
+        char c = json[pos];
+        if (c == '"') {
+            size_t end = qjsonSkipString(json, pos);
+            if (end == std::string::npos) return false;
+            valEnd = end;
+        } else if (c == '{' || c == '[') {
+            int depth = 0;
+            bool str = false;
+            size_t end = pos;
+            for (; end < json.size(); end++) {
+                char d = json[end];
+                if (str) {
+                    if (d == '\\') { end++; continue; }
+                    if (d == '"') str = false;
+                    continue;
+                }
+                if (d == '"') { str = true; continue; }
+                if (d == '{' || d == '[') depth++;
+                else if (d == '}' || d == ']') {
+                    depth--;
+                    if (depth == 0) { end++; break; }
+                }
+            }
+            if (depth != 0) return false;
+            valEnd = end;
+        } else {
+            size_t end = pos;
+            while (end < json.size() && json[end] != ',' && json[end] != '}' &&
+                   json[end] != ']' && json[end] != ' ' && json[end] != '\n' &&
+                   json[end] != '\t' && json[end] != '\r') {
+                end++;
+            }
+            valEnd = end;
+        }
+        if (name == key) return true;
+        pos = valEnd;
+    }
+    return false;
+}
+
+// Replace or insert a top-level string property; returns the new JSON text.
+// Used to persist the active provider selection in config.json.
+inline std::string qjsonSetTopLevelString(const std::string &json,
+                                          const std::string &key,
+                                          const std::string &value) {
+    std::string quoted = "\"" + jsonEscape(value) + "\"";
+    size_t valStart = 0, valEnd = 0;
+    if (qjsonFindTopLevelProperty(json, key, valStart, valEnd)) {
+        return json.substr(0, valStart) + quoted + json.substr(valEnd);
+    }
+    size_t obj = json.find('{');
+    if (obj == std::string::npos) {
+        return "{\"" + key + "\":" + quoted + "}";
+    }
+    size_t pos = obj + 1;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                 json[pos] == '\n' || json[pos] == '\r')) {
+        pos++;
+    }
+    bool empty = pos < json.size() && json[pos] == '}';
+    std::string prop = "\"" + key + "\":" + quoted;
+    if (empty) {
+        return json.substr(0, obj + 1) + prop + json.substr(obj + 1);
+    }
+    return json.substr(0, obj + 1) + prop + "," + json.substr(obj + 1);
+}
+
+// Replace or insert a string property inside a top-level object section
+// (e.g. config.json [audio].denoise). The section is created when absent.
+// Like qjsonSetTopLevelString this edits raw text so comments survive.
+inline std::string qjsonSetSectionString(const std::string &json,
+                                         const std::string &section,
+                                         const std::string &key,
+                                         const std::string &value) {
+    size_t vs = 0, ve = 0;
+    if (qjsonFindTopLevelProperty(json, section, vs, ve)) {
+        std::string inner = json.substr(vs, ve - vs);
+        std::string updated = qjsonSetTopLevelString(inner, key, value);
+        return json.substr(0, vs) + updated + json.substr(ve);
+    }
+    std::string prop = "\"" + section + "\":{\"" + key + "\":" +
+                       "\"" + jsonEscape(value) + "\"}";
+    size_t obj = json.find('{');
+    if (obj == std::string::npos) {
+        return "{" + prop + "}";
+    }
+    size_t pos = obj + 1;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t' ||
+                                 json[pos] == '\n' || json[pos] == '\r')) {
+        pos++;
+    }
+    bool empty = pos < json.size() && json[pos] == '}';
+    return json.substr(0, obj + 1) + prop + (empty ? "" : ",") + json.substr(obj + 1);
 }
 
 } // namespace vinput

@@ -1,6 +1,0 @@
-{
-    "denoise": "speexdsp",
-    "lufs_target": -16.0,
-    "speex_level": -15,
-    "crest_threshold": 2.4
-}

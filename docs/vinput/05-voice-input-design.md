@@ -57,7 +57,7 @@ CapsLock release
 
 ## Switch Flow
 
-`Ctrl+CapsLock` enters switch mode without starting audio capture. Horizontal keys switch ASR providers. Vertical keys switch denoisers. Selections are persisted to the existing fcitx config or `~/.config/vinput/audio.json`.
+`Ctrl+CapsLock` enters switch mode without starting audio capture. Horizontal keys switch ASR providers. Vertical keys switch denoisers. ASR selection is persisted to the `"provider"` line of `~/.config/vinput/config.json`; the denoiser to its `[audio]` section.
 
 ## Failure Modes
 

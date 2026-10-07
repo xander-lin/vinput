@@ -1,63 +1,47 @@
-# Configuration Examples
+# Configuration
 
-This directory stores example configuration files only. Packaged defaults are installed to `/etc/vinput/`; per-user overrides live in `~/.config/vinput/`.
+Everything user-editable lives in `~/.config/vinput/`. Defaults are built into
+the code — files are **optional and sparse**: create only what you want to
+change, copy nothing you don't. `//` line comments are allowed in every file.
 
-## Boundary
-
-- Track `*.json.example` in Git.
-- Do not track `*.json` in this directory.
-- Real API keys, local paths, and user preferences belong in `/etc/vinput/*.json` or `~/.config/vinput/*.json`.
-- Runtime lookup order is `~/.config/vinput/*.json` first, then `/etc/vinput/*.json`; missing user files are copied from `/etc/vinput/` on first read.
-- `.gitignore` ignores `config/*.json` to reduce the chance of committing real credentials.
-
-## Layout: one file per concern, one file per provider
-
-| Example | Runtime file | Purpose |
-|---------|--------------|---------|
-| `vinput.json.example` | `~/.config/vinput/vinput.json` | Interaction: activation delay, notifications, CapsLock debounce |
-| `audio.json.example` | `~/.config/vinput/audio.json` | Denoiser choice (`none`/`speexdsp`/`deepfilter`) and audio tuning (`lufs_target`, `speex_level`, `crest_threshold`) |
-| `qwen.json.example` | `~/.config/vinput/qwen.json` | Alibaba DashScope: API key, ASR model, features, timeout |
-| `doubao.json.example` | `~/.config/vinput/doubao.json` | ByteDance: API key, resource ID, model, poll/timeout tuning |
-| `zipformer.json.example` | `~/.config/vinput/zipformer.json` | Local Zipformer: model dir, sherpa-onnx binary, threads, timeout |
-| `fire_red.json.example` | `~/.config/vinput/fire_red.json` | Local FireRed: model dir, sherpa-onnx binary, threads, timeout |
-
-All provider configs are re-read on the worker thread before every
-recognition, so model/parameter changes take effect on the next recording
-without restarting fcitx5. (Breaking change 2026-10: `advanced.json` was
-removed; every section moved into the file of the provider it belongs to.)
-
-## API keys (plaintext)
-
-Cloud API keys live as a plain `api_key` field in the vendor JSON — there is
-no secret store integration (removed 2026-10 by design). Protect the files
-with permissions:
-
-```bash
-chmod 600 ~/.config/vinput/qwen.json ~/.config/vinput/doubao.json
+```
+~/.config/vinput/
+├── config.json        # provider selection + [ui] + [audio]
+├── qwen.json          # cloud provider (api_key, model, ...)
+├── doubao.json
+├── zipformer.json     # local providers (model_dir, ...)
+└── fire_red.json
 ```
 
-## Config validation
+There is no `/etc/vinput` layer and no pacnew dance. The auto-detected device
+buffer cache moved to `~/.cache/vinput/pa_buffer.json` — it is state, not
+configuration, and regenerates itself.
 
-Every config file is validated on read against a schema
-(`ASR_provider/src/config_schema.h`):
+## Boundary (repo side)
 
-- JSON syntax errors are pinpointed with a byte offset and reported in the
-  input panel (`Vinput: <provider>.json: ...`), and the file's values are
-  not trusted (defaults apply).
-- Unknown or misspelled fields get a "did you mean" suggestion
-  (`"modelname" (did you mean "model"?)`), type mismatches are named
-  (`"timeout_sec" expects an integer`), and missing required fields are
-  reported — these warnings go to the fcitx5 log and are appended to the
-  provider switch notification (`Ctrl+CapsLock`) as a `⚠` line.
+- Track `*.example` in Git; never track real `*.json` (`.gitignore` covers `config/*.json`).
+- Real API keys and paths belong only in `~/.config/vinput/`.
+
+## `config.json` — global file
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `provider` | (required) | Active ASR backend: `qwen` \| `doubao` \| `zipformer` \| `fire_red` \| `mock`. `Ctrl+CapsLock` switching rewrites this line |
+| `ui.activation_msec` | `300` | How long CapsLock must be held |
+| `ui.notification_timeout` | `2000` | Switch notification duration (ms) |
+| `ui.debounce_count` | `2` | Key-release debounce samples |
+| `audio.denoise` | (auto) | `speexdsp` \| `deepfilter` \| `none` |
+| `audio.lufs_target` | `-16.0` | Loudness target for gain normalization |
+| `audio.speex_level` | `-15` | speexdsp suppression level (dB) |
+| `audio.crest_threshold` | `2.4` | Crest-based speech gate; `0` disables |
 
 ## `qwen.json` keys
 
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `api_key` | (required) | Plaintext DashScope API key; keep the file mode 0600 |
-| `model` | `qwen-audio-3.1-asr-flash` | ASR model ID, e.g. `qwen-audio-3.0-asr-flash`, `fun-asr-flash-2026-06-15`, or legacy `qwen3-asr-flash` |
+| `model` | `qwen-audio-3.1-asr-flash` | ASR model ID, e.g. `qwen-audio-3.0-asr-flash`, `fun-asr-flash-2026-06-15`, or legacy `qwen3-asr-flash` (wire format auto-detected per model family) |
 | `endpoint` | `https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation` | Full request URL; switch to the `{WorkspaceId}.cn-beijing.maas.aliyuncs.com` domain when migrating |
-| `request_style` | `auto` | Wire format by model family; force with `input_audio` or `legacy` |
 | `language_hints` | (auto-detect) | JSON array of language codes, e.g. `["zh","en"]` (max 4) |
 | `keep_dialect` | `false` | `qwen-audio-3.1-asr-flash` only: keep dialect wording |
 | `speaker_diarization` | `false` | `qwen-audio-3.1-asr-flash` only: label speakers |
@@ -74,23 +58,65 @@ Every config file is validated on read against a schema
 | `model_name` | `bigmodel` | `request.model_name` sent to the submit API |
 | `enable_itn` | `true` | Inverse text normalization |
 | `enable_punc` | `true` | Punctuation restoration |
-| `poll_interval_msec` | `800` | Query poll interval |
-| `max_polls` | `75` | Give up after this many polls |
-| `submit_timeout_sec` | `30` | Submit request timeout |
-| `query_timeout_sec` | `15` | Each query request timeout |
+| `timeout_sec` | `90` | Whole-recognition budget: submit + result polling share one deadline |
 
-## Initial Setup
+## `zipformer.json` / `fire_red.json` keys
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `model_dir` | `~/.local/share/vinput/models/...` | sherpa-onnx model directory |
+| `timeout_sec` | `120` | Local binary wall-clock timeout |
+| `bin_path` | `~/.local/share/vinput/sherpa-onnx/bin/...` | sherpa-onnx binary (`sherpa-onnx` for zipformer, `sherpa-onnx-offline` for fire_red) |
+
+## API keys (plaintext)
+
+Cloud API keys are plain `api_key` fields in the vendor JSON — there is no
+secret store integration (removed 2026-10 by design). Protect the files:
 
 ```bash
-mkdir -p ~/.config/vinput
-cp config/vinput.json.example ~/.config/vinput/vinput.json
-cp config/audio.json.example ~/.config/vinput/audio.json
-cp config/qwen.json.example ~/.config/vinput/qwen.json      # then add api_key once
-cp config/doubao.json.example ~/.config/vinput/doubao.json  # then add api_key once
+chmod 600 ~/.config/vinput/qwen.json ~/.config/vinput/doubao.json
 ```
 
-After copying, edit the files under `~/.config/vinput/`. Do not put real keys into files under this repository.
+## Comments
+
+Every config file supports `//` line comments. They are stripped before
+validation and parsing (string-aware, byte offsets preserved), so
+`"https://..."` values are never mangled:
+
+```json
+{
+    // switch back after testing the local models
+    "provider": "qwen",
+    "audio": { "crest_threshold": 0 }  // keep gating off on this mic
+}
+```
+
+## Config validation
+
+Every config file is validated on read against a schema
+(`ASR_provider/src/config_schema.h`):
+
+- JSON syntax errors are pinpointed with a byte offset and reported in the
+  input panel (`Vinput: config.json: ...`), and the file's values are not
+  trusted (defaults apply).
+- Unknown or misspelled fields get a "did you mean" suggestion
+  (`"modelname" (did you mean "model"?)`), type mismatches are named
+  (`field "timeout_sec" expects an integer`), and missing required fields are
+  reported — these warnings go to the fcitx5 log and are appended to the
+  provider switch notification (`Ctrl+CapsLock`) as a `⚠` line.
+- Retired fields (e.g. `request_style`, `max_polls`, `num_threads`) are
+  flagged as unknown so stale files tell you they do nothing.
+
+Cloud provider configs are re-read on the worker thread before every
+recognition, so model/parameter changes take effect on the next recording
+without restarting fcitx5. (Breaking changes 2026-10: `advanced.json` was
+split per provider; `vinput.json` + `audio.json` merged into `config.json`;
+the `/etc/vinput` default layer, the fcitx5 `DefaultProvider` option and the
+tuning knobs above were removed.)
 
 ## Update Rule
 
-When adding a new runtime config key, update the relevant `.json.example`, this README, and the user-facing configuration section in `README.md`.
+When adding a new runtime config key, update the relevant `.example`, this
+README, the user-facing configuration section in `README.md`, and the schema
+in `ASR_provider/src/config_schema.h` — schemas live next to the module and
+must change together with the readers.

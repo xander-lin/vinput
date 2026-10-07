@@ -28,9 +28,11 @@ static std::string configPath() {
     const char *overridePath = getenv("VINPUT_PA_BUFFER_CONFIG");
     if (overridePath && *overridePath) return overridePath;
 
+    // Auto-detected device cache, not user configuration — lives in the cache
+    // dir so ~/.config/vinput holds only files a user is meant to edit.
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
-    std::string dir = std::string(home) + "/.config/vinput";
+    std::string dir = std::string(home) + "/.cache/vinput";
     mkdir(dir.c_str(), 0755);
     return dir + "/pa_buffer.json";
 }

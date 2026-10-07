@@ -15,14 +15,6 @@ conflicts=("$_pkgname")
 install=PKGBUILD.install
 source=("$_pkgname::git+https://gitee.com/xander-lin/vinput.git")
 sha256sums=('SKIP')
-backup=(
-    'etc/vinput/audio.json'
-    'etc/vinput/doubao.json'
-    'etc/vinput/fire_red.json'
-    'etc/vinput/qwen.json'
-    'etc/vinput/vinput.json'
-    'etc/vinput/zipformer.json'
-)
 
 pkgver() {
     cd "$_pkgname"
@@ -40,10 +32,9 @@ package() {
     DESTDIR="$pkgdir" meson install -C build
     install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_pkgname/LICENSE"
-    for f in config/*.json.example; do
-        name=${f##*/}
-        name=${name%.example}
-        install -Dm644 "$f" "$pkgdir/etc/vinput/$name"
+    # No /etc layer: defaults live in code, user files are optional and sparse.
+    # Shipped examples carry comments and document every field.
+    for f in config/*.example; do
         install -Dm644 "$f" "$pkgdir/usr/share/doc/$_pkgname/$f"
     done
 }

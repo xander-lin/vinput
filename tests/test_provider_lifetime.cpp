@@ -38,7 +38,7 @@ void writeConfig(const std::filesystem::path &path,
     std::ofstream config(path);
     config << "{\"model_dir\":\"" << root.string()
            << "\",\"bin_path\":\"" << fakeSherpa.string()
-           << "\",\"num_threads\":1,\"timeout_sec\":3}\n";
+           << "\",\"timeout_sec\":3}\n";
     // The provider preflight requires the model files to exist; the fake
     // sherpa binary never reads them.
     for (const char *f : {"encoder.int8.onnx", "decoder.int8.onnx", "tokens.txt"}) {

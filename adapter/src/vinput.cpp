@@ -7,8 +7,6 @@
 #include <fcitx/inputcontext.h>    // InputContext
 #include <fcitx/inputpanel.h>       // InputPanel, setClientPreedit
 #include <fcitx/inputcontextmanager.h>  // findByUUID
-#include <fcitx-config/configuration.h>   // FCITX_CONFIGURATION
-#include <fcitx-config/iniparser.h>       // readAsIni, safeSaveAsIni
 #include <fcitx-utils/i18n.h>             // _() translation macro
 #include <fcitx-utils/event.h>     // EventLoop, addTimeEvent
 #include <fcitx-utils/eventloopinterface.h> // now()
@@ -18,6 +16,7 @@
 
 // uinput: 内核级常驻虚键设备, 兼容所有 Wayland compositor
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/uinput.h>
@@ -62,13 +61,6 @@ static std::string diagnosticHash(std::string_view value) {
     return vinput::hashDiagnosticValue(value).substr(0, 16);
 }
 
-// 配置: 定义 addon 的可配置选项
-FCITX_CONFIGURATION(
-    VinputConfig,
-    fcitx::Option<std::string> defaultProvider{
-        this, "DefaultProvider", _("Default ASR Provider"), "zipformer"};
-);
-
 // VinputAddon — Vinput 语音输入插件的 addon 主体
 // 继承 AddonInstance, fcitx5 加载 addon 时实例化此类
 class VinputAddon : public fcitx::AddonInstance {
@@ -89,14 +81,16 @@ public:
         callbackGate_->owner = this;
         reloadConfig();
 
-        auto vjson = vinput::readConfigFile("vinput.json");
+        auto vjson = vinput::readConfigFile("config.json");
         if (!vjson.empty()) {
-            vinput::reportConfigIssues(
-                "vinput", "vinput.json",
-                vinput::validateConfigJson(vjson, vinput::vinputConfigSchema()));
-            activationUsec_ = (uint64_t)vinput::jsonInt(vjson, "activation_msec", 300) * 1000;
-            notificationTimeout_ = vinput::jsonInt(vjson, "notification_timeout", 2000);
-            debounceCount_ = vinput::jsonInt(vjson, "debounce_count", 2);
+            vinput::reportConfigIssues("vinput", "config.json",
+                                       vinput::validateConfigFileJson(vjson));
+            std::string ui = vinput::qjsonRawValue(vjson, "ui");
+            if (!ui.empty()) {
+                activationUsec_ = (uint64_t)vinput::jsonInt(ui, "activation_msec", 300) * 1000;
+                notificationTimeout_ = vinput::jsonInt(ui, "notification_timeout", 2000);
+                debounceCount_ = vinput::jsonInt(ui, "debounce_count", 2);
+            }
         }
 
         FCITX_INFO() << "Vinput addon loaded";
@@ -144,23 +138,45 @@ public:
         vinput::diagnosticLog().event("adapter", "addon_shutdown_end");
     }
 
-    // 配置读写
-    void reloadConfig() override {
-        readAsIni(config_, confFile);
-    }
-    const fcitx::Configuration *getConfig() const override {
-        return &config_;
-    }
-    void setConfig(const fcitx::RawConfig &config) override {
-        config_.load(config, true);
-        safeSaveAsIni(config_, confFile);
+private:
+    // config.json [ui] 节
+    uint64_t activationUsec_ = 300 * 1000;  // activation_msec
+    int notificationTimeout_ = 2000;         // notification_timeout
+    int debounceCount_ = 2;                   // debounce_count
+
+    // 当前选择的 ASR 后端（config.json 顶层 "provider"）
+    std::string readProviderSelection() {
+        return vinput::qjsonStringValue(vinput::readConfigFile("config.json"),
+                                        "provider");
     }
 
-private:
-    static constexpr char confFile[] = "conf/vinput.conf";
-    uint64_t activationUsec_ = 300 * 1000;  // from vinput.json: activation_msec
-    int notificationTimeout_ = 2000;         // from vinput.json: notification_timeout
-    int debounceCount_ = 2;                   // from vinput.json: debounce_count
+    // config.json 原子写回：在原始文本上做最小替换以保留用户注释，
+    // tmp + rename，文件权限 0600。
+    void writeConfigJson(const std::string &json) {
+        namespace fs = std::filesystem;
+        std::string tmp = vinput::configPath("config.json.tmp");
+        {
+            std::ofstream f(tmp, std::ios::trunc);
+            if (!f) return;
+            f << json;
+        }
+        chmod(tmp.c_str(), 0600);
+        std::error_code ec;
+        fs::rename(tmp, vinput::configPath("config.json"), ec);
+        if (ec) unlink(tmp.c_str());
+    }
+
+    void persistProviderSelection(const std::string &id) {
+        writeConfigJson(vinput::qjsonSetTopLevelString(
+            vinput::readFileIfExists(vinput::configPath("config.json")),
+            "provider", id));
+    }
+
+    void persistDenoiserSelection(const std::string &name) {
+        writeConfigJson(vinput::qjsonSetSectionString(
+            vinput::readFileIfExists(vinput::configPath("config.json")),
+            "audio", "denoise", name));
+    }
 
     // 创建常驻 uinput 虚拟键盘设备, 用于还原 CapsLock
     void initUinput() {
@@ -209,7 +225,6 @@ private:
     }
 
     fcitx::Instance *instance_;
-    VinputConfig config_;
     std::unique_ptr<fcitx::HandlerTableEntry<fcitx::EventHandler>> keyWatcher_;
     int uinputFd_ = -1;
     int revertDebounce_ = 0;            // uinput CapsLock 反弹去抖计数
@@ -312,8 +327,7 @@ private:
             std::vector<std::string>{}, notificationTimeout_, nullptr, nullptr);
 
         FCITX_INFO() << "Vinput switch ASR provider: " << nextName;
-        config_.defaultProvider.setValue(nextId);
-        safeSaveAsIni(config_, confFile);
+        persistProviderSelection(nextId);
         playSound("switch");
     }
 
@@ -332,17 +346,8 @@ private:
             "Vinput", msg,
             std::vector<std::string>{}, notificationTimeout_, nullptr, nullptr);
 
-        // 持久化到 audio.json
-        const char *home = getenv("HOME");
-        if (home) {
-            std::string path = std::string(home) + "/.config/vinput/audio.json";
-            std::string content = "{\"denoise\": \"" + name + "\"}\n";
-            FILE *f = fopen(path.c_str(), "w");
-            if (f) {
-                fwrite(content.c_str(), 1, content.size(), f);
-                fclose(f);
-            }
-        }
+        // 持久化到 config.json [audio]
+        persistDenoiserSelection(name);
 
         FCITX_INFO() << "Vinput switch denoiser: " << name;
         playSound("switch");
@@ -496,7 +501,7 @@ private:
         FCITX_INFO() << "Vinput [activate] captured window";
         vinput::diagnosticLog().event("adapter", "recognition_activated", {
             {"recognition_id", std::to_string(recognitionId)},
-            {"provider_config", config_.defaultProvider.value()},
+            {"provider_config", readProviderSelection()},
             {"press_to_activate_ms", std::to_string(pressMs)}
         });
 
@@ -507,7 +512,7 @@ private:
         }
 
         // 根据配置中的默认后端 ID 查找索引
-        const auto &defaultId = config_.defaultProvider.value();
+        const auto defaultId = readProviderSelection();
         for (int i = 0; i < (int)list.size(); i++) {
             if (list[i].first == defaultId) {
                 providerIndex_ = i;
@@ -524,29 +529,13 @@ private:
         audioCapture_ = std::make_unique<vinput::AudioCapture>();
         audioCapture_->setDiagnosticId(recognitionId);
         {
-            // 从 audio.json 读取初始降噪方法，设置到 AudioCapture
-            const char *home = getenv("HOME");
-            if (home) {
-                std::string path = std::string(home) + "/.config/vinput/audio.json";
-                std::ifstream f(path);
-                if (f) {
-                    std::string json((std::istreambuf_iterator<char>(f)),
-                                      std::istreambuf_iterator<char>());
-                    auto pos = json.find("\"denoise\"");
-                    if (pos != std::string::npos) {
-                        pos = json.find('"', json.find(':', pos) + 1);
-                        if (pos != std::string::npos) {
-                            pos++;
-                            auto end = json.find('"', pos);
-                            if (end != std::string::npos) {
-                                auto method = json.substr(pos, end - pos);
-                                auto &list = denoiserList();
-                                for (int i = 0; i < (int)list.size(); i++) {
-                                    if (list[i] == method) { denoiserIndex_ = i; break; }
-                                }
-                            }
-                        }
-                    }
+            // 从 config.json [audio] 读取初始降噪方法，设置到 AudioCapture
+            auto method = vinput::jsonStr(
+                vinput::readConfigSection("config.json", "audio"), "denoise");
+            if (!method.empty()) {
+                auto &list = denoiserList();
+                for (int i = 0; i < (int)list.size(); i++) {
+                    if (list[i] == method) { denoiserIndex_ = i; break; }
                 }
             }
         }

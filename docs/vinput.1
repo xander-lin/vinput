@@ -44,16 +44,35 @@ file. While holding CapsLock:
 \fB\(da / j\fP   \-\- next denoiser
 .SH CONFIGURATION
 Configuration files are stored in \fB~/.config/vinput/\fP.
-Every provider config is re-read before each recognition; model and
-parameter changes apply on the next recording without restarting fcitx5.
+Defaults are built into the code: files are optional and sparse.
+Every file supports // line comments. Every provider config is re-read
+before each recognition; model and parameter changes apply on the next
+recording without restarting fcitx5.
 Every file is validated on read: JSON syntax errors (with byte offset) are
 shown in the input panel and the file's values are not trusted; unknown
 fields get a "did you mean" suggestion and type mismatches are named in the
 fcitx5 log and the provider switch notification.
+.SS Global
+.TP
+\fBconfig.json\fP
+Active provider selection and shared tuning. \fBCtrl+CapsLock\fP switching
+rewrites the \fBprovider\fP line, so it always shows the backend the next
+login starts with.
+.RS
+.nf
+{
+    // qwen | doubao | zipformer | fire_red | mock
+    "provider": "qwen",
+    "ui":    { "activation_msec": 300 },
+    "audio": { "denoise": "speexdsp", "crest_threshold": 0 }
+}
+.fi
+.RE
 .SS User-facing (must edit)
 .TP
 \fBdoubao.json\fP
-API credentials for ByteDance Volcengine ASR plus model and polling tuning.
+API credentials for ByteDance Volcengine ASR plus model and timeout tuning.
+Submit and result polling share one deadline, \fBtimeout_sec\fP (default 90).
 .RS
 .nf
 {"api_key": "xxx", "resource_id": "volc.seedasr.auc"}
@@ -70,34 +89,17 @@ API key, ASR model, and recognition options for Alibaba DashScope
 .fi
 .RE
 .TP
-\fBvinput.json\fP
-Interaction parameters.
-.RS
-.nf
-{"activation_msec": 300, "notification_timeout": 2000, "debounce_count": 2}
-.fi
-.RE
-.SS Advanced (optional, all have hardcoded defaults)
-.TP
-\fBaudio.json\fP
-Denoiser selection and audio tuning.
-.RS
-.nf
-{"denoise": "speexdsp"}   \fR# none | speexdsp | deepfilter\fP
-.fi
-.RE
+\fBqwen.json\fP optional keys include \fBmodel\fP, \fBlanguage_hints\fP,
+\fBvocabulary\fP, \fBvocabulary_id\fP, \fBkeep_dialect\fP,
+\fBspeaker_diarization\fP and \fBtimeout_sec\fP; see
+/usr/share/doc/fcitx5-vinput-git/config/ for commented examples.
+.SS Optional (all defaults in code)
 .TP
 \fBzipformer.json\fP
-Local Zipformer tuning: \fBmodel_dir\fP, \fBbin_path\fP, \fBnum_threads\fP,
-\fBtimeout_sec\fP.
+Local Zipformer tuning: \fBmodel_dir\fP, \fBbin_path\fP, \fBtimeout_sec\fP.
 .TP
 \fBfire_red.json\fP
-Local FireRed tuning: \fBmodel_dir\fP, \fBbin_path\fP, \fBnum_threads\fP,
-\fBtimeout_sec\fP.
-.PP
-For Doubao, \fBpoll_interval_msec\fP (in \fBdoubao.json\fP) is the normal
-result polling interval. The first query is sent after 300ms to improve
-short-utterance latency; later queries use the configured interval.
+Local FireRed tuning: \fBmodel_dir\fP, \fBbin_path\fP, \fBtimeout_sec\fP.
 .SH ASR PROVIDERS
 .TP
 \fBMock\fP

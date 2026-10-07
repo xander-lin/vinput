@@ -88,8 +88,8 @@ int main() {
     fs::path root = (tmp && *tmp) ? tmp : "/tmp/vinput-cloud-provider-queue";
     fs::create_directories(root / ".config/vinput");
     setenv("HOME", root.c_str(), 1);
-    // Isolate from the installed /etc/vinput fallback (which carries a
-    // placeholder api_key and would trigger real network requests).
+    // Pin configs to this sandbox (the developer\'s real
+    // ~/.config/vinput would otherwise carry a live api_key).
     {
         std::ofstream q(root / ".config/vinput/qwen.json");
         q << "{\"api_key\":\"\",\"endpoint\":\"http://127.0.0.1:1/x\"}\n";

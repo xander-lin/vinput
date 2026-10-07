@@ -28,7 +28,6 @@ private:
 
     std::string modelDir_;
     std::string sherpaBin_ = "~/.local/share/vinput/sherpa-onnx/bin/sherpa-onnx";
-    int numThreads_ = 30;
     int timeoutSec_ = 120;
     std::shared_ptr<std::atomic_bool> cancel_ =
         std::make_shared<std::atomic_bool>(false);

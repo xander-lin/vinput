@@ -10,8 +10,8 @@ test_buffer_detect_cache = executable('test_buffer_detect_cache',
   'test_buffer_detect_cache.cpp',
   dependencies: [asr_provider_dep])
 
-test_config_fallback = executable('test_config_fallback',
-  'test_config_fallback.cpp',
+test_config_read = executable('test_config_read',
+  'test_config_read.cpp',
   dependencies: [asr_provider_dep])
 
 test_provider_lifetime = executable('test_provider_lifetime',
@@ -45,7 +45,7 @@ test_config_schema = executable('test_config_schema',
 test('asr_registry', test_asr_registry)
 test('audio_capture_file', test_audio_capture_file)
 test('buffer_detect_cache', test_buffer_detect_cache)
-test('config_fallback', test_config_fallback)
+test('config_read', test_config_read)
 test('provider_lifetime', test_provider_lifetime)
 test('curl_cancellation', test_curl_cancellation)
 test('audio_capture_stop', test_audio_capture_stop)

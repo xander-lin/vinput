@@ -20,6 +20,9 @@
 
 namespace vinput {
 
+// Threading knob retired from config; the default works for both local models.
+constexpr int kSherpaNumThreads = 30;
+
 // Last non-empty line of captured child output, trimmed for error detail.
 static std::string lastOutputLine(std::string output) {
     while (!output.empty() && (output.back() == '\n' || output.back() == '\r' ||
@@ -48,7 +51,6 @@ ZipformerAsrProvider::ZipformerAsrProvider()
                            validateConfigJson(cfg, localModelConfigSchema()));
         auto d = jsonStr(cfg, "model_dir");
         if (!d.empty()) modelDir_ = d;
-        numThreads_ = jsonInt(cfg, "num_threads", numThreads_);
         timeoutSec_ = jsonInt(cfg, "timeout_sec", timeoutSec_);
         auto b = jsonStr(cfg, "bin_path");
         if (!b.empty()) sherpaBin_ = b;
@@ -83,7 +85,7 @@ void ZipformerAsrProvider::transcribe(std::vector<int16_t>, const std::string &w
     startAsrWorker(
         worker_,
         [wavPath, modelDir = expandPath(modelDir_),
-         sherpaBin = expandPath(sherpaBin_), numThreads = numThreads_,
+         sherpaBin = expandPath(sherpaBin_), numThreads = kSherpaNumThreads,
           timeoutSec = timeoutSec_, cancel = cancel_, onR = onResult_,
           onE = onError_, diagnosticId = diagnosticId_]() mutable {
             runTranscribe(wavPath, modelDir, std::move(sherpaBin), numThreads,

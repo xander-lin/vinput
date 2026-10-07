@@ -29,12 +29,14 @@ who want fast push-to-talk dictation without leaving the keyboard.
   (`Vinput Qwen [timer] encode/network/parse` logs, `diagnostic_log` events).
 - Every provider must degrade loudly and recoverably: cancellable requests,
   curl handle eviction on transport failure, actionable error strings.
-- Configuration is one plain-JSON file per concern/provider (`qwen.json`,
-  `doubao.json`, `audio.json`, `vinput.json`, `zipformer.json`,
-  `fire_red.json`), examples tracked in `config/`,
-  installed to `/etc/vinput/`, overridable per-user in `~/.config/vinput/`.
-  `advanced.json` was removed in the 2026-10 breaking restructure — each
-  provider owns exactly one file now.
+- Configuration layout (2026-10 restructure, user-selected): one global
+  `config.json` (`provider` selection + `[ui]` + `[audio]` sections, `//`
+  comments allowed, switch write-backs land here) plus one file per provider
+  (`qwen.json`, `doubao.json`, `zipformer.json`, `fire_red.json`) for
+  credential isolation. Defaults live in code only — files are optional and
+  sparse, there is no `/etc/vinput` layer (removed 2026-10: no pacnew noise,
+  no test-isolation footgun). `advanced.json`, `vinput.json` and
+  `audio.json` are historical names that no longer exist.
 - API keys are plaintext JSON fields (secret-store integration was added
   and then removed in 2026-10 by explicit decision: no Secret Service on
   the target desktop; simplicity wins). Recommend `chmod 600` on the
@@ -43,8 +45,14 @@ who want fast push-to-talk dictation without leaving the keyboard.
   syntax errors carry a byte offset and disable the file (input-panel
   error), unknown fields get "did you mean" suggestions, type mismatches
   and missing required fields are logged and appended to the switch
-  notification. Schemas live next to the module; update them together
-  with the readers.
+  notification. Retired fields are flagged as unknown so stale files tell
+  the user they do nothing. Schemas live next to the module; update them
+  together with the readers.
+- Tuning knobs stay out of config unless a user has a real reason to turn
+  them: request_style, the doubao poll knobs and num_threads were retired
+  into code constants in 2026-10 (doubao keeps one whole-budget
+  `timeout_sec`). New knobs need a justification, not just "might be
+  useful".
 
 ## Project Principles
 

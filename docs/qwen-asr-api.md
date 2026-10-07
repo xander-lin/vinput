@@ -26,7 +26,6 @@ Vinput 的 `qwen` provider 通过 DashScope multimodal 同步接口调用阿里�
     "api_key": "sk-xxx",
     "model": "qwen-audio-3.1-asr-flash",
     "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
-    "request_style": "auto",
     "language_hints": ["zh"],
     "keep_dialect": false,
     "speaker_diarization": false,
@@ -41,7 +40,6 @@ Vinput 的 `qwen` provider 通过 DashScope multimodal 同步接口调用阿里�
 | `api_key` | 必填 | 明文百炼 API Key（建议文件权限 600；https://bailian.console.aliyun.com/?tab=model#/api-key） |
 | `model` | `qwen-audio-3.1-asr-flash` | 模型 ID，见上表 |
 | `endpoint` | 北京 DashScope 域名 | 可切换到 `{WorkspaceId}.cn-beijing.maas.aliyuncs.com` 新域名 |
-| `request_style` | `auto` | `auto` 按模型家族选请求格式；可强制 `input_audio` / `legacy` |
 | `language_hints` | 自动检测 | 语言代码数组（最多 4 个），如 `["zh","en"]` |
 | `keep_dialect` | `false` | 仅 3.1：保留方言表达（默认转普通话文本） |
 | `speaker_diarization` | `false` | 仅 3.1：说话人分离 |
@@ -54,8 +52,9 @@ Vinput 的 `qwen` provider 通过 DashScope multimodal 同步接口调用阿里�
 
 ## 请求格式
 
-`request_style=auto` 规则：模型名以 `qwen3-asr-flash` / `qwen2-audio` /
-`qwen2-asr` 开头 → 旧格式；其余（含未知新模型）→ 新格式。
+请求格式按模型家族自动识别（2026-10 起不再可配置）：模型名以
+`qwen3-asr-flash` / `qwen2-audio` / `qwen2-asr` 开头 → 旧格式；
+其余（含未知新模型）→ 新格式。
 
 ### 新格式（qwen-audio-3.x / fun-asr-flash，当前默认）
 

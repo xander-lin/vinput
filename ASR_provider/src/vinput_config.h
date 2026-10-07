@@ -10,6 +10,8 @@
 
 #include <curl/curl.h>
 
+#include "qwen_json.h"
+
 namespace vinput {
 
 inline std::string configDir() {
@@ -19,10 +21,6 @@ inline std::string configDir() {
 
 inline std::string configPath(const std::string &name) {
     return configDir() + "/" + name;
-}
-
-inline std::string systemConfigDir() {
-    return "/etc/vinput";
 }
 
 inline std::string readFileIfExists(const std::string &path) {
@@ -36,27 +34,20 @@ inline bool fileExists(const std::string &path) {
     return std::filesystem::exists(path);
 }
 
-inline void copyFileIfMissing(const std::string &src, const std::string &dst) {
-    if (!fileExists(src) || fileExists(dst)) return;
-    std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(dst).parent_path(), ec);
-    if (ec) return;
-    std::filesystem::copy_file(src, dst, std::filesystem::copy_options::none, ec);
-}
-
-inline std::string readConfigFileFromDirs(const std::string &name,
-                                          const std::string &userDir,
-                                          const std::string &fallbackDir) {
-    auto userPath = userDir + "/" + name;
-    if (fileExists(userPath)) return readFileIfExists(userPath);
-
-    auto fallbackPath = fallbackDir + "/" + name;
-    copyFileIfMissing(fallbackPath, userPath);
-    return readFileIfExists(userPath);
-}
-
+// Read a config file from ~/.config/vinput/<name>. Defaults live in code, so
+// files are optional and sparse. // line comments are stripped (string-aware,
+// offsets preserved) before the text reaches validators and field walkers.
 inline std::string readConfigFile(const std::string &name) {
-    return readConfigFileFromDirs(name, configDir(), systemConfigDir());
+    return qjsonStripComments(readFileIfExists(configPath(name)));
+}
+
+// Extract a top-level object section (e.g. "audio" of config.json) as raw
+// JSON text; "" when the file or the section is absent.
+inline std::string readConfigSection(const std::string &name,
+                                     const std::string &section) {
+    std::string json = readConfigFile(name);
+    if (json.empty()) return "";
+    return qjsonRawValue(json, section);
 }
 
 inline std::string jsonStr(const std::string &json, const std::string &key,

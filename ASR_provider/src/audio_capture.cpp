@@ -76,14 +76,7 @@ static std::string jsonGetString(const std::string &json, const std::string &key
 }
 
 static void loadAudioConfig(std::string &denoiseMethod) {
-    const char *home = getenv("HOME");
-    if (!home) return;
-    std::string path = std::string(home) + "/.config/vinput/audio.json";
-    std::ifstream f(path);
-    if (!f) return;
-    std::string json((std::istreambuf_iterator<char>(f)),
-                      std::istreambuf_iterator<char>());
-    auto val = jsonGetString(json, "denoise");
+    auto val = jsonGetString(readConfigSection("config.json", "audio"), "denoise");
     if (val == "deepfilter") denoiseMethod = "deepfilter";
     else if (val == "speexdsp") denoiseMethod = "speexdsp";
     else if (val == "true") denoiseMethod = "speexdsp";
@@ -99,18 +92,18 @@ AudioCapture::AudioCapture() {
 
     static bool configLoaded = false;
     if (!configLoaded) {
-        auto cfg = readConfigFile("audio.json");
+        auto cfg = readConfigSection("config.json", "audio");
         if (!cfg.empty()) {
-            reportConfigIssues("capture", "audio.json",
+            reportConfigIssues("capture", "config.json [audio]",
                                validateConfigJson(cfg, audioConfigSchema()));
             auto t = jsonDouble(cfg, "lufs_target", lufsTarget_);
             if (t > -100.0 && t < 0.0) lufsTarget_ = t;
             speexLevel_ = jsonInt(cfg, "speex_level", speexLevel_);
             crestThreshold_ = jsonDouble(cfg, "crest_threshold", crestThreshold_);
-            fprintf(stderr, "Vinput Capture: audio.json parsed: crest_threshold=%.2f lufs_target=%.1f speex_level=%d\n",
+            fprintf(stderr, "Vinput Capture: config.json [audio] parsed: crest_threshold=%.2f lufs_target=%.1f speex_level=%d\n",
                     crestThreshold_, lufsTarget_, speexLevel_);
         } else {
-            fprintf(stderr, "Vinput Capture: audio.json tuning keys not found, using defaults\n");
+            fprintf(stderr, "Vinput Capture: config.json [audio] absent, using defaults\n");
         }
         configLoaded = true;
     }

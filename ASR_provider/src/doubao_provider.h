@@ -23,10 +23,8 @@ struct DoubaoSettings {
     std::string modelName = "bigmodel";  // request.model_name
     bool enableItn = true;
     bool enablePunc = true;
-    int pollIntervalMsec = 800;  // query poll interval
-    int maxPolls = 75;           // give up after this many polls
-    long submitTimeout = 30;     // submit request timeout (seconds)
-    long queryTimeout = 15;      // each query request timeout (seconds)
+    long timeout = 90;           // whole-recognition budget (timeout_sec):
+                                // submit + polling share one deadline
     std::string configError;     // fatal doubao.json issue (syntax error)
 };
 
