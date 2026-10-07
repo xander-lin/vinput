@@ -100,3 +100,20 @@
 - **Prevention**: Any test touching `readConfigFile` must pre-create every
   config file it cares about inside its temp HOME; watch for test runtimes
   that jump (0.4s -> 0.01s here was the network disappearing).
+
+## 6. Breaking config migrations must reconcile user customizations (found 2026-10)
+
+- **Mistake/context**: Removing `advanced.json` moved every tuning key into
+  per-provider files with code defaults, but the user's existing
+  `advanced.json` values were not merged — a hand-tuned
+  `crest_threshold: 0` (silence gating disabled) silently reverted to the
+  2.4 default, changing recording behavior after upgrade.
+- **Root cause**: The restructure treated the breaking change as
+  file-layout-only; user-owned values inside the removed file were treated
+  as disposable, which is correct only for untouched defaults.
+- **Correction**: Manually merged the user's values into
+  `~/.config/vinput/audio.json` and trashed the stale `advanced.json`.
+- **Prevention**: When a breaking change removes or renames a config file,
+  diff the user's file against the shipped example of the old version;
+  anything that differs from the old default must be carried into the new
+  layout (or explicitly reported), never silently dropped.
