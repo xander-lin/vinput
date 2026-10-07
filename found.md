@@ -117,3 +117,23 @@
   diff the user's file against the shipped example of the old version;
   anything that differs from the old default must be carried into the new
   layout (or explicitly reported), never silently dropped.
+
+## 7. Never redirect a command's output onto its own input path (found 2026-10)
+
+- **Mistake/context**: A chained command did `cd /tmp/pkgdir && ... ; sed
+  ... "$REPO/PKGBUILD" > PKGBUILD`. The `cd` failed, `&&` stopped, but the
+  `;`-separated `sed` still ran from the repo root, where `> PKGBUILD`
+  truncated the very file sed was reading — the repo PKGBUILD became empty
+  and was committed that way.
+- **Root cause**: Relative output redirection resolves before the reader
+  opens the file, so redirecting onto the input path empties it; the failed
+  `cd` shifted the working directory silently because `;` ignores the
+  failure.
+- **Correction**: Restored the file from the previous commit and amended.
+- **Prevention**:
+  - Transform files in place via a temp copy (`sed ... src > /tmp/x && mv`),
+    or use `sed -i`; never `cmd src > src`.
+  - Prefer `set -e`-style strict chaining (stop on first failure) in shell
+    one-liners; a failing `cd` must abort the rest.
+  - After any file-producing shell step, verify non-empty before committing
+    (`wc -l`) — the empty PKGBUILD sailed through `git add -A`.
