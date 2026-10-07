@@ -1,6 +1,6 @@
 post_install() {
     echo "==> Vinput: defaults are built in; user config lives in ~/.config/vinput/."
-    echo "==> Copy an example you need from /usr/share/doc/fcitx5-vinput-git/config/."
+    echo "==> Copy an example you need from /usr/share/doc/fcitx5-vinput/config/."
     printf '\033[1;31m==> Vinput: Local ASR models (zipformer/fire-red) must be downloaded separately.\033[0m\n'
     echo "==> See setup instructions: https://github.com/xander-lin/vinput#local-models-optional"
     echo "==> Cloud providers: put your API key into ~/.config/vinput/qwen.json"
