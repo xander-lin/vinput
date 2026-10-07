@@ -13,6 +13,21 @@ change, copy nothing you don't. `//` line comments are allowed in every file.
 └── fire_red.json
 ```
 
+## Self-healing templates
+
+`config.json`, `qwen.json` and `doubao.json` **regenerate whenever they are
+found missing**: every config read checks for the file, and a missing one is
+recreated as a commented template (mode `0600`). Want the template back? Just
+rename the file away — the next recognition or provider switch recreates it.
+Existing files are never touched. Local provider files are not seeded; they
+work with built-in defaults once the models are installed.
+
+Seeded credential templates carry `"api_key": "PASTE_YOUR_KEY_HERE"`, which
+counts as *not configured*: recognition fails with
+`Vinput: fill api_key in ~/.config/vinput/qwen.json` until you replace it.
+The first recognition on a fresh install therefore walks the user straight
+to a self-documenting file — no manual hunting for docs.
+
 There is no `/etc/vinput` layer and no pacnew dance. The auto-detected device
 buffer cache moved to `~/.cache/vinput/pa_buffer.json` — it is state, not
 configuration, and regenerates itself.

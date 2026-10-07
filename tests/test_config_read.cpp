@@ -1,4 +1,8 @@
+#include "config_schema.h"
+#include "config_templates.h"
 #include "vinput_config.h"
+
+#include <sys/stat.h>
 
 #include <cstdlib>
 #include <filesystem>
@@ -24,6 +28,30 @@ static void writeFile(const fs::path &path, const std::string &content) {
     f << content;
 }
 
+static void testTemplatesAreValid() {
+    // The templates must be valid JSON after comment stripping and pass
+    // their schemas (an invalid template would break every fresh install).
+    std::string cfg = vinput::qjsonStripComments(vinput::configJsonTemplate());
+    check(vinput::qjsonSyntaxError(cfg).empty(), "config.json template is JSON");
+    check(vinput::validateConfigFileJson(cfg).empty(),
+          "config.json template passes schema");
+
+    std::string qwen = vinput::qjsonStripComments(vinput::qwenJsonTemplate());
+    check(vinput::qjsonSyntaxError(qwen).empty(), "qwen.json template is JSON");
+    check(vinput::validateConfigJson(qwen, vinput::qwenConfigSchema()).empty(),
+          "qwen.json template passes schema");
+    check(vinput::qjsonStringValue(qwen, "api_key") == vinput::kApiKeyPlaceholder,
+          "qwen template carries the placeholder key");
+
+    std::string doubao =
+        vinput::qjsonStripComments(vinput::doubaoJsonTemplate());
+    check(vinput::qjsonSyntaxError(doubao).empty(),
+          "doubao.json template is JSON");
+    check(vinput::validateConfigJson(doubao, vinput::doubaoConfigSchema())
+              .empty(),
+          "doubao.json template passes schema");
+}
+
 int main() {
     auto base = fs::temp_directory_path() /
                 ("vinput-config-read-" + std::to_string(getpid()));
@@ -31,10 +59,52 @@ int main() {
     fs::create_directories(home);
     setenv("HOME", home.c_str(), 1);
 
-    // Missing file: empty content, defaults apply.
-    check(vinput::readConfigFile("config.json").empty(),
-          "missing config reads as empty");
+    testTemplatesAreValid();
 
+    // Seeded files: reading a missing monitored file recreates the template.
+    auto cfgPath = home / ".config/vinput/config.json";
+    auto cfg = vinput::readConfigFile("config.json");
+    check(fs::exists(cfgPath), "missing config.json was seeded");
+    check(vinput::jsonStr(cfg, "provider") == "qwen",
+          "seeded template carries provider=qwen");
+
+    // Renaming the file away and reading again regenerates it.
+    fs::rename(cfgPath, home / ".config/vinput/config.json.bak");
+    cfg = vinput::readConfigFile("config.json");
+    check(fs::exists(cfgPath), "renamed-away config.json regenerated");
+    check(vinput::jsonStr(cfg, "provider") == "qwen",
+          "regenerated template still parses");
+
+    // Existing files are never overwritten.
+    writeFile(home / ".config/vinput/qwen.json",
+              "{\"api_key\":\"sk-real\",\"model\":\"fun-asr-flash\"}");
+    vinput::readConfigFile("qwen.json");
+    std::string qwen =
+        vinput::readFileIfExists(home / ".config/vinput/qwen.json");
+    check(qwen.find("sk-real") != std::string::npos &&
+              qwen.find(vinput::kApiKeyPlaceholder) == std::string::npos,
+          "existing qwen.json untouched by seeding");
+
+    // Seeded credential template appears for doubao and is valid.
+    auto doubao = vinput::readConfigFile("doubao.json");
+    check(fs::exists(home / ".config/vinput/doubao.json"),
+          "missing doubao.json was seeded");
+    check(vinput::qjsonStringValue(doubao, "api_key") ==
+              vinput::kApiKeyPlaceholder,
+          "doubao template placeholder present");
+
+    // Unmonitored files stay absent: local providers are not seeded.
+    check(vinput::readConfigFile("zipformer.json").empty(),
+          "zipformer.json still reads as empty");
+    check(!fs::exists(home / ".config/vinput/zipformer.json"),
+          "zipformer.json is not seeded");
+
+    // Mode 0600 on seeded files.
+    struct stat st {};
+    stat((home / ".config/vinput/doubao.json").c_str(), &st);
+    check((st.st_mode & 0777) == 0600, "seeded file mode is 0600");
+
+    // Comments are stripped as spaces: offsets still match the original file.
     writeFile(home / ".config/vinput/config.json", R"JSON({
     // which provider is active; Ctrl+CapsLock rewrites this line
     "provider": "qwen",
@@ -44,19 +114,14 @@ int main() {
         "lufs_target": -16.0
     }
 })JSON");
-
-    auto cfg = vinput::readConfigFile("config.json");
-    check(vinput::jsonStr(cfg, "provider") == "qwen",
-          "provider parsed from commented file");
-
-    // Comments are stripped as spaces: offsets still match the original file.
+    cfg = vinput::readConfigFile("config.json");
     check(cfg.size() == fs::file_size(home / ".config/vinput/config.json"),
           "stripping preserves length (byte offsets stay valid)");
 
     // '/' inside strings must never be treated as a comment.
     writeFile(home / ".config/vinput/qwen.json",
               "{\"api_key\":\"sk-x\", \"endpoint\":\"https://dashscope.aliyuncs.com/x\"}");
-    auto qwen = vinput::readConfigFile("qwen.json");
+    qwen = vinput::readConfigFile("qwen.json");
     check(vinput::jsonStr(qwen, "endpoint") == "https://dashscope.aliyuncs.com/x",
           "URL inside string survives comment stripping");
 
@@ -69,8 +134,6 @@ int main() {
           "ui section extracted");
     check(vinput::readConfigSection("config.json", "missing").empty(),
           "absent section reads as empty");
-    check(vinput::readConfigSection("nope.json", "audio").empty(),
-          "absent file reads as empty section");
 
     fs::remove_all(base);
     if (failures) {

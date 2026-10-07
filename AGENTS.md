@@ -48,6 +48,12 @@ who want fast push-to-talk dictation without leaving the keyboard.
   notification. Retired fields are flagged as unknown so stale files tell
   the user they do nothing. Schemas live next to the module; update them
   together with the readers.
+- Config discovery is self-healing, not doc-first: config.json/qwen.json/
+  doubao.json regenerate as commented templates whenever a read finds them
+  missing (users rename a file away to recover the template); the seeded
+  api_key placeholder counts as "not configured" so errors point at the
+  exact file. `src/config_templates.h` holds the texts — they must stay
+  valid JSON after comment stripping and pass their schemas.
 - Tuning knobs stay out of config unless a user has a real reason to turn
   them: request_style, the doubao poll knobs and num_threads were retired
   into code constants in 2026-10 (doubao keeps one whole-budget

@@ -682,6 +682,7 @@ private:
         auto target = activeRecognition_->target;
         auto tPress = activeRecognition_->pressTime;
         const auto recognitionId = activeRecognition_->recognitionId;
+        const auto providerId = activeRecognition_->providerId;
         auto callbackGate = callbackGate_;
         asr_->setDiagnosticId(recognitionId);
         asr_->setResultCallback([callbackGate, target, tPress, recognitionId](const std::string &text, bool isFinal) {
@@ -705,8 +706,9 @@ private:
                 });
             });
         });
-        asr_->setErrorCallback([callbackGate, target, recognitionId](const std::string &error,
-                                                                     vinput::AsrErrorCategory category) {
+        asr_->setErrorCallback([callbackGate, target, recognitionId, providerId](
+            const std::string &error,
+            vinput::AsrErrorCategory category) {
             FCITX_INFO() << "Vinput ASR error: " << error
                          << " (category=" << (int)category << ")";
             vinput::diagnosticLog().event("adapter", "recognition_error_callback", {
@@ -718,7 +720,8 @@ private:
             std::string status;
             switch (category) {
             case vinput::AsrErrorCategory::ConfigMissing:
-                status = "Vinput: API key missing; see ~/.config/vinput";
+                status = "Vinput: fill api_key in ~/.config/vinput/" +
+                         providerId + ".json";
                 break;
             case vinput::AsrErrorCategory::AuthRejected:
                 status = "Vinput: API key rejected; check provider config";

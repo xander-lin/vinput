@@ -1,6 +1,7 @@
 #include "qwen_provider.h"
 #include "qwen_json.h"
 #include "config_schema.h"
+#include "config_templates.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -165,6 +166,7 @@ QwenSettings QwenAsrProvider::resolveSettings() {
             s.timeout = jsonInt(json, "timeout_sec", (int)s.timeout);
         }
     }
+    if (fileKey == kApiKeyPlaceholder) fileKey.clear();  // seeded, not yet filled
     s.apiKey = apiKeyOverride_.empty() ? fileKey : apiKeyOverride_;
     return s;
 }

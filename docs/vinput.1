@@ -45,7 +45,11 @@ file. While holding CapsLock:
 .SH CONFIGURATION
 Configuration files are stored in \fB~/.config/vinput/\fP.
 Defaults are built into the code: files are optional and sparse.
-Every file supports // line comments. Every provider config is re-read
+Every file supports // line comments.
+\fBconfig.json\fP, \fBqwen.json\fP and \fBdoubao.json\fP self-heal:
+whenever a read finds them missing, a commented template is regenerated
+(mode 0600) -- rename one away to get a fresh template. Seeded credentials
+carry a PASTE_YOUR_KEY_HERE placeholder that counts as not configured. Every provider config is re-read
 before each recognition; model and parameter changes apply on the next
 recording without restarting fcitx5.
 Every file is validated on read: JSON syntax errors (with byte offset) are

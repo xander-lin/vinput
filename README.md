@@ -151,6 +151,12 @@ rm *.tar.bz2
 
 All user config lives in `~/.config/vinput/`; defaults are built into the code, so files are **optional and sparse** — copy only what you want to change. Every file supports `//` line comments. There is no `/etc` layer. See man page: `man vinput`
 
+`config.json`, `qwen.json` and `doubao.json` self-heal: whenever a read finds
+them missing, a commented template is regenerated (mode `0600`). Rename one
+away to get a fresh template back. Seeded credentials carry a
+`PASTE_YOUR_KEY_HERE` placeholder that counts as "not configured", so the
+first recognition on a fresh install points you at the exact file to edit.
+
 Tracked files under `config/*.example` are commented examples only. Runtime `*.json` files are ignored by Git and should stay under `~/.config/vinput/`.
 
 ```

@@ -8,8 +8,14 @@
 #include <memory>
 #include <string>
 
+#include <cstdio>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <curl/curl.h>
 
+#include "config_templates.h"
 #include "qwen_json.h"
 
 namespace vinput {
@@ -34,10 +40,43 @@ inline bool fileExists(const std::string &path) {
     return std::filesystem::exists(path);
 }
 
+// Regenerate <name> from its template when missing (mode 0600). config.json /
+// qwen.json / doubao.json are monitored: users can move one away at any time
+// and the next config read recreates the commented template. Local provider
+// files are not seeded — they work with built-in defaults. Existing files are
+// never touched (O_EXCL).
+inline void seedConfigTemplateIfMissing(const std::string &name,
+                                        const char *(*tmpl)()) {
+    std::string path = configPath(name);
+    if (fileExists(path)) return;
+    std::error_code ec;
+    std::filesystem::create_directories(configDir(), ec);
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) return;
+    const char *body = tmpl();
+    ssize_t n = write(fd, body, strlen(body));
+    close(fd);
+    if (n > 0) {
+        fprintf(stderr,
+                "Vinput: %s was missing — recreated the commented template; "
+                "edit it to configure\n",
+                path.c_str());
+    }
+}
+
 // Read a config file from ~/.config/vinput/<name>. Defaults live in code, so
-// files are optional and sparse. // line comments are stripped (string-aware,
-// offsets preserved) before the text reaches validators and field walkers.
+// files are optional and sparse. The three seeded files regenerate from their
+// templates whenever they are found missing. // line comments are stripped
+// (string-aware, offsets preserved) before the text reaches validators and
+// field walkers.
 inline std::string readConfigFile(const std::string &name) {
+    if (name == "config.json") {
+        seedConfigTemplateIfMissing(name, configJsonTemplate);
+    } else if (name == "qwen.json") {
+        seedConfigTemplateIfMissing(name, qwenJsonTemplate);
+    } else if (name == "doubao.json") {
+        seedConfigTemplateIfMissing(name, doubaoJsonTemplate);
+    }
     return qjsonStripComments(readFileIfExists(configPath(name)));
 }
 
