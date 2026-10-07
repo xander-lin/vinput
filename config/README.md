@@ -26,44 +26,35 @@ recognition, so model/parameter changes take effect on the next recording
 without restarting fcitx5. (Breaking change 2026-10: `advanced.json` was
 removed; every section moved into the file of the provider it belongs to.)
 
-## API key lifecycle (secure + convenient)
+## API keys (plaintext)
 
-Cloud API keys never stay in plaintext config files. Writing `api_key` into
-`qwen.json`/`doubao.json` is a **one-time write channel**:
-
-1. Put the key in the vendor JSON, e.g. `{"api_key": "sk-xxx"}`.
-2. On the next recognition Vinput imports it into the encrypted Secret
-   Service store (KWallet / GNOME Keyring, via `secret-tool`, secret passed
-   on stdin — never on the command line, never logged).
-3. The field is **removed from the JSON** by an atomic rewrite (file mode
-   becomes `0600`).
-4. From then on the key is read from the store. Writing `api_key` into the
-   JSON again later means "update the key".
-
-Graceful degradation: on systems without a Secret Service backend (headless
-setups) the import fails, the plaintext field is **kept** (with a warning),
-and the provider keeps working — nothing is lost.
-
-Manual store operations:
+Cloud API keys live as a plain `api_key` field in the vendor JSON — there is
+no secret store integration (removed 2026-10 by design). Protect the files
+with permissions:
 
 ```bash
-# Inspect what Vinput stored
-secret-tool lookup service vinput provider qwen
-secret-tool lookup service vinput provider doubao
-
-# Remove a stored key (provider then falls back to the JSON field)
-secret-tool clear service vinput provider qwen
+chmod 600 ~/.config/vinput/qwen.json ~/.config/vinput/doubao.json
 ```
 
-Requirements for the keyring path: `libsecret` (provides `secret-tool`) and
-a running Secret Service (KDE Wallet or GNOME Keyring), unlocked at login —
-the default on desktop sessions.
+## Config validation
+
+Every config file is validated on read against a schema
+(`ASR_provider/src/config_schema.h`):
+
+- JSON syntax errors are pinpointed with a byte offset and reported in the
+  input panel (`Vinput: <provider>.json: ...`), and the file's values are
+  not trusted (defaults apply).
+- Unknown or misspelled fields get a "did you mean" suggestion
+  (`"modelname" (did you mean "model"?)`), type mismatches are named
+  (`"timeout_sec" expects an integer`), and missing required fields are
+  reported — these warnings go to the fcitx5 log and are appended to the
+  provider switch notification (`Ctrl+CapsLock`) as a `⚠` line.
 
 ## `qwen.json` keys
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `api_key` | (see lifecycle) | One-time import channel; stripped after import |
+| `api_key` | (required) | Plaintext DashScope API key; keep the file mode 0600 |
 | `model` | `qwen-audio-3.1-asr-flash` | ASR model ID, e.g. `qwen-audio-3.0-asr-flash`, `fun-asr-flash-2026-06-15`, or legacy `qwen3-asr-flash` |
 | `endpoint` | `https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation` | Full request URL; switch to the `{WorkspaceId}.cn-beijing.maas.aliyuncs.com` domain when migrating |
 | `request_style` | `auto` | Wire format by model family; force with `input_audio` or `legacy` |
@@ -78,7 +69,7 @@ the default on desktop sessions.
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `api_key` | (see lifecycle) | One-time import channel; stripped after import |
+| `api_key` | (required) | Plaintext ByteDance API key; keep the file mode 0600 |
 | `resource_id` | (required) | ByteDance resource ID, e.g. `volc.seedasr.auc` |
 | `model_name` | `bigmodel` | `request.model_name` sent to the submit API |
 | `enable_itn` | `true` | Inverse text normalization |

@@ -15,10 +15,10 @@ namespace vinput {
 
 // Resolved from doubao.json (+ setConfig overrides) on the worker thread
 // before each request. Re-read per request so model/feature switches need no
-// restart. The API key follows the same import-into-secret-store lifecycle
-// as the Qwen provider (see secret_store.h).
+// restart. api_key is a plaintext field in doubao.json (file mode 0600
+// recommended).
 struct DoubaoSettings {
-    std::string apiKey;    // resolved key (override > file > keyring)
+    std::string apiKey;    // resolved key (override > file)
     std::string resourceId;
     std::string modelName = "bigmodel";  // request.model_name
     bool enableItn = true;
@@ -27,6 +27,7 @@ struct DoubaoSettings {
     int maxPolls = 75;           // give up after this many polls
     long submitTimeout = 30;     // submit request timeout (seconds)
     long queryTimeout = 15;      // each query request timeout (seconds)
+    std::string configError;     // fatal doubao.json issue (syntax error)
 };
 
 class DoubaoAsrProvider : public IAsrProvider {
@@ -66,7 +67,6 @@ private:
 
     std::string apiKeyOverride_;     // set via setConfig; wins over everything
     std::string resourceIdOverride_;
-    std::string keyringCache_;       // cached keyring lookup (worker thread only)
     std::shared_ptr<WorkerState> state_;
     std::thread worker_;
 };

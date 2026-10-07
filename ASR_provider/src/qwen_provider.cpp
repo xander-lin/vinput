@@ -1,6 +1,6 @@
 #include "qwen_provider.h"
 #include "qwen_json.h"
-#include "secret_store.h"
+#include "config_schema.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -143,23 +143,32 @@ QwenSettings QwenAsrProvider::resolveSettings() {
     std::string fileKey;
     std::string json = readConfigFile("qwen.json");
     if (!json.empty()) {
-        fileKey = qjsonStringValue(json, "api_key");
-        std::string v = qjsonStringValue(json, "model");
-        if (!v.empty()) s.model = v;
-        v = qjsonStringValue(json, "endpoint");
-        if (!v.empty()) s.endpoint = v;
-        v = qjsonStringValue(json, "request_style");
-        if (!v.empty()) s.requestStyle = v;
-        s.languageHintsRaw = qjsonRawValue(json, "language_hints");
-        s.vocabularyRaw = qjsonRawValue(json, "vocabulary");
-        s.vocabularyId = qjsonStringValue(json, "vocabulary_id");
-        s.keepDialect = qjsonRawValue(json, "keep_dialect") == "true";
-        s.speakerDiarization =
-            qjsonRawValue(json, "speaker_diarization") == "true";
-        s.timeout = jsonInt(json, "timeout_sec", (int)s.timeout);
+        auto issues = validateConfigJson(json, qwenConfigSchema());
+        reportConfigIssues("qwen", "qwen.json", issues);
+        for (const auto &issue : issues) {
+            if (issue.fatal) {
+                s.configError = issue.message;
+                break;
+            }
+        }
+        if (s.configError.empty()) {
+            fileKey = qjsonStringValue(json, "api_key");
+            std::string v = qjsonStringValue(json, "model");
+            if (!v.empty()) s.model = v;
+            v = qjsonStringValue(json, "endpoint");
+            if (!v.empty()) s.endpoint = v;
+            v = qjsonStringValue(json, "request_style");
+            if (!v.empty()) s.requestStyle = v;
+            s.languageHintsRaw = qjsonRawValue(json, "language_hints");
+            s.vocabularyRaw = qjsonRawValue(json, "vocabulary");
+            s.vocabularyId = qjsonStringValue(json, "vocabulary_id");
+            s.keepDialect = qjsonRawValue(json, "keep_dialect") == "true";
+            s.speakerDiarization =
+                qjsonRawValue(json, "speaker_diarization") == "true";
+            s.timeout = jsonInt(json, "timeout_sec", (int)s.timeout);
+        }
     }
-    s.apiKey = resolveApiKeyLifecycle("qwen", "qwen.json", fileKey,
-                                      keyringCache_, apiKeyOverride_);
+    s.apiKey = apiKeyOverride_.empty() ? fileKey : apiKeyOverride_;
     return s;
 }
 
@@ -196,9 +205,9 @@ void QwenAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
             {"recognition_id", std::to_string(task.diagnosticId)},
             {"wav_hash", hashDiagnosticValue(task.wavPath).substr(0, 16)}
         });
-        // Config (and the API key lifecycle) is resolved on the worker thread
-        // so secret-store calls never block the UI thread, and config members
-        // are never touched from the UI thread (no cross-thread mutation).
+        // Config is resolved on the worker thread so per-request file reads
+        // never block the UI thread, and config members are never touched
+        // from the UI thread (no cross-thread mutation).
         QwenSettings settings = resolveSettings();
         processRecording(std::move(task.samples), task.wavPath,
                          settings,
@@ -230,6 +239,16 @@ void QwenAsrProvider::processRecording(std::vector<int16_t> samples,
         {"sample_count", std::to_string(samples.size())}
     });
     struct Cleanup { std::string p; ~Cleanup() { unlink(p.c_str()); } } _wav{wavPath};
+
+    if (!settings.configError.empty()) {
+        diagnosticLog().event("provider", "request_error", {
+            {"provider", "qwen"}, {"recognition_id", std::to_string(diagnosticId)},
+            {"reason", "config_invalid"}
+        });
+        if (onE) onE("Qwen: qwen.json: " + settings.configError,
+                     AsrErrorCategory::ConfigInvalid);
+        return;
+    }
 
     if (settings.apiKey.empty()) {
         diagnosticLog().event("provider", "request_error", {
@@ -388,12 +407,19 @@ std::unique_ptr<IAsrProvider> QwenAsrProviderFactory::create() {
 
 std::string QwenAsrProviderFactory::displayName() const {
     std::string model = kDefaultQwenModel;
+    std::string warning;
     std::string json = readConfigFile("qwen.json");
     if (!json.empty()) {
-        std::string v = qjsonStringValue(json, "model");
-        if (!v.empty()) model = v;
+        auto issues = validateConfigJson(json, qwenConfigSchema());
+        reportConfigIssues("qwen", "qwen.json", issues);
+        warning = firstConfigIssue(issues);
+        if (warning.empty()) {
+            std::string v = qjsonStringValue(json, "model");
+            if (!v.empty()) model = v;
+        }
     }
-    return "Qwen · " + model;
+    return warning.empty() ? "Qwen · " + model
+                           : "Qwen · " + model + "\n⚠ qwen.json: " + warning;
 }
 
 static struct CurlInit {

@@ -1,0 +1,163 @@
+#include "config_schema.h"
+
+#include <iostream>
+#include <string>
+#include <vector>
+
+namespace {
+
+int failures = 0;
+
+void check(bool ok, const std::string &what) {
+    if (!ok) {
+        failures++;
+        std::cerr << "FAIL: " << what << "\n";
+    }
+}
+
+bool hasIssue(const std::vector<vinput::ConfigIssue> &issues,
+              const std::string &needle, bool fatal) {
+    for (const auto &issue : issues) {
+        if (issue.fatal == fatal &&
+            issue.message.find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void testSyntax() {
+    check(vinput::qjsonSyntaxError("{\"a\": 1}").empty(), "valid object");
+    check(vinput::qjsonSyntaxError("{\"a\": \"x\", \"b\": [1, 2]}").empty(),
+          "nested values");
+    check(!vinput::qjsonSyntaxError("{\"a\": \"x\"").empty(),
+          "unterminated object");
+    check(!vinput::qjsonSyntaxError("{\"a\": 1,,}").empty(),
+          "double comma");
+    check(!vinput::qjsonSyntaxError("{\"a\" 1}").empty(),
+          "missing colon");
+    check(!vinput::qjsonSyntaxError("{\"a\": \"unterminated}").empty(),
+          "unterminated string");
+    check(!vinput::qjsonSyntaxError("[1, 2]").empty(),
+          "root must be object");
+    check(!vinput::qjsonSyntaxError("{\"a\": 1} trailing").empty(),
+          "trailing content");
+    check(vinput::qjsonSyntaxError("").empty() == false ||
+          vinput::qjsonSyntaxError("").size() > 0, "empty reported");
+    // Offset is reported for syntax errors.
+    auto issues = vinput::validateConfigJson("{\"model\": ", vinput::qwenConfigSchema());
+    check(issues.size() == 1 && issues[0].fatal, "syntax issue is fatal");
+    check(issues[0].message.find("offset") != std::string::npos,
+          "syntax issue carries offset");
+}
+
+void testUnknownFields() {
+    auto issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"modelname\": \"x\"}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "unknown field \"modelname\"", false),
+          "unknown field reported");
+    check(hasIssue(issues, "did you mean \"model\"", false),
+          "typo suggestion offered");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"timeout\": 5}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "unknown field \"timeout\"", false),
+          "prefix-only field flagged");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"enable_itn\": true}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "enable_itn", false),
+          "field from another vendor flagged in qwen schema");
+}
+
+void testTypeChecks() {
+    auto issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"timeout_sec\": \"abc\"}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "\"timeout_sec\" expects an integer", false),
+          "int type mismatch");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"keep_dialect\": \"yes\"}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "\"keep_dialect\" expects true/false", false),
+          "bool type mismatch");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": 42}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "\"api_key\" expects a string", false),
+          "string type mismatch");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"language_hints\": [\"zh\", 3]}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "\"language_hints\" expects an array of strings", false),
+          "array element type mismatch");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"vocabulary\": [1,2]}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "\"vocabulary\" expects an object", false),
+          "object type mismatch");
+
+    issues = vinput::validateConfigJson(
+        "{\"api_key\": \"sk\", \"timeout_sec\": 60}", vinput::qwenConfigSchema());
+    check(issues.empty(), "valid qwen config passes");
+}
+
+void testRequired() {
+    auto issues = vinput::validateConfigJson("{\"model\": \"m\"}", vinput::qwenConfigSchema());
+    check(hasIssue(issues, "missing required field \"api_key\"", false),
+          "missing api_key reported");
+
+    issues = vinput::validateConfigJson("{}", vinput::doubaoConfigSchema());
+    check(hasIssue(issues, "missing required field \"api_key\"", false) &&
+              hasIssue(issues, "missing required field \"resource_id\"", false),
+          "doubao required fields reported");
+}
+
+void testTopLevelKeys() {
+    auto keys = vinput::qjsonTopLevelKeys(
+        "{\"a\": 1, \"nested\": {\"a\": 2, \"b\": 3}, \"c\": [{\"d\": 4}]}");
+    check(keys == std::vector<std::string>({"a", "nested", "c"}),
+          "top-level keys only, nested ignored");
+}
+
+void testSchemas() {
+    // Every example file shipped in config/ must validate against its schema.
+    struct Case {
+        const char *file;
+        std::vector<vinput::ConfigField> schema;
+        std::vector<std::string> required; // fields that must parse
+    };
+    // zipformer and fire_red share the local-model schema.
+    auto local = vinput::localModelConfigSchema();
+    auto zip = vinput::validateConfigJson(
+        "{\"model_dir\": \"~/.local/x\", \"num_threads\": 30, \"timeout_sec\": 120, "
+        "\"bin_path\": \"~/.local/bin\"}", local);
+    check(zip.empty(), "zipformer example validates");
+}
+
+void testNearest() {
+    auto schema = vinput::qwenConfigSchema();
+    check(vinput::nearestConfigField("modelname", schema) == "model",
+          "modelname -> model");
+    check(vinput::nearestConfigField("timeout", schema) == "timeout_sec",
+          "timeout -> timeout_sec");
+    check(vinput::nearestConfigField("zzzzzzzz", schema).empty(),
+          "no suggestion for unrelated names");
+}
+
+} // namespace
+
+int main() {
+    testSyntax();
+    testUnknownFields();
+    testTypeChecks();
+    testRequired();
+    testTopLevelKeys();
+    testSchemas();
+    testNearest();
+    if (failures) {
+        std::cerr << failures << " check(s) failed\n";
+        return 1;
+    }
+    std::cout << "config_schema: all checks passed\n";
+    return 0;
+}

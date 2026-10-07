@@ -1,5 +1,5 @@
 #include "doubao_provider.h"
-#include "secret_store.h"
+#include "config_schema.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -176,20 +176,29 @@ DoubaoSettings DoubaoAsrProvider::resolveSettings() {
     std::string fileKey;
     std::string json = readConfigFile("doubao.json");
     if (!json.empty()) {
-        fileKey = jsonGetString(json, "api_key");
-        s.resourceId = jsonGetString(json, "resource_id");
-        std::string v = jsonGetString(json, "model_name");
-        if (!v.empty()) s.modelName = v;
-        s.enableItn = jsonBoolValue(json, "enable_itn", s.enableItn);
-        s.enablePunc = jsonBoolValue(json, "enable_punc", s.enablePunc);
-        s.pollIntervalMsec = jsonInt(json, "poll_interval_msec", s.pollIntervalMsec);
-        s.maxPolls = jsonInt(json, "max_polls", s.maxPolls);
-        s.submitTimeout = jsonInt(json, "submit_timeout_sec", (int)s.submitTimeout);
-        s.queryTimeout = jsonInt(json, "query_timeout_sec", (int)s.queryTimeout);
+        auto issues = validateConfigJson(json, doubaoConfigSchema());
+        reportConfigIssues("doubao", "doubao.json", issues);
+        for (const auto &issue : issues) {
+            if (issue.fatal) {
+                s.configError = issue.message;
+                break;
+            }
+        }
+        if (s.configError.empty()) {
+            fileKey = qjsonStringValue(json, "api_key");
+            s.resourceId = jsonGetString(json, "resource_id");
+            std::string v = jsonGetString(json, "model_name");
+            if (!v.empty()) s.modelName = v;
+            s.enableItn = jsonBoolValue(json, "enable_itn", s.enableItn);
+            s.enablePunc = jsonBoolValue(json, "enable_punc", s.enablePunc);
+            s.pollIntervalMsec = jsonInt(json, "poll_interval_msec", s.pollIntervalMsec);
+            s.maxPolls = jsonInt(json, "max_polls", s.maxPolls);
+            s.submitTimeout = jsonInt(json, "submit_timeout_sec", (int)s.submitTimeout);
+            s.queryTimeout = jsonInt(json, "query_timeout_sec", (int)s.queryTimeout);
+        }
     }
     if (!resourceIdOverride_.empty()) s.resourceId = resourceIdOverride_;
-    s.apiKey = resolveApiKeyLifecycle("doubao", "doubao.json", fileKey,
-                                      keyringCache_, apiKeyOverride_);
+    s.apiKey = apiKeyOverride_.empty() ? fileKey : apiKeyOverride_;
     return s;
 }
 
@@ -226,9 +235,9 @@ void DoubaoAsrProvider::workerLoop(const std::shared_ptr<WorkerState> &state) {
             {"recognition_id", std::to_string(task.diagnosticId)},
             {"wav_hash", hashDiagnosticValue(task.wavPath).substr(0, 16)}
         });
-        // Config (and the API key lifecycle) is resolved on the worker thread
-        // so secret-store calls never block the UI thread, and config members
-        // are never touched from the UI thread (no cross-thread mutation).
+        // Config is resolved on the worker thread so per-request file reads
+        // never block the UI thread, and config members are never touched
+        // from the UI thread (no cross-thread mutation).
         DoubaoSettings settings = resolveSettings();
         processRecording(std::move(task.samples), task.wavPath,
                          settings,
@@ -264,6 +273,16 @@ void DoubaoAsrProvider::processRecording(std::vector<int16_t> samples,
         {"sample_count", std::to_string(samples.size())}
     });
     struct Cleanup { std::string p; ~Cleanup() { unlink(p.c_str()); } } _wav{wavPath};
+
+    if (!settings.configError.empty()) {
+        diagnosticLog().event("provider", "request_error", {
+            {"provider", "doubao"}, {"recognition_id", std::to_string(diagnosticId)},
+            {"reason", "config_invalid"}
+        });
+        if (onE) onE("Doubao: doubao.json: " + settings.configError,
+                     AsrErrorCategory::ConfigInvalid);
+        return;
+    }
 
     if (apiKey.empty() || resourceId.empty()) {
         diagnosticLog().event("provider", "request_error", {
@@ -583,12 +602,19 @@ std::unique_ptr<IAsrProvider> DoubaoAsrProviderFactory::create() {
 
 std::string DoubaoAsrProviderFactory::displayName() const {
     std::string model = "bigmodel";
+    std::string warning;
     std::string json = readConfigFile("doubao.json");
     if (!json.empty()) {
-        std::string v = jsonGetString(json, "model_name");
-        if (!v.empty()) model = v;
+        auto issues = validateConfigJson(json, doubaoConfigSchema());
+        reportConfigIssues("doubao", "doubao.json", issues);
+        warning = firstConfigIssue(issues);
+        if (warning.empty()) {
+            std::string v = jsonGetString(json, "model_name");
+            if (!v.empty()) model = v;
+        }
     }
-    return "Doubao · " + model;
+    return warning.empty() ? "Doubao · " + model
+                           : "Doubao · " + model + "\n⚠ doubao.json: " + warning;
 }
 
 static struct CurlInit {

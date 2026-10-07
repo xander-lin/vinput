@@ -1,4 +1,5 @@
 #include "zipformer_provider.h"
+#include "config_schema.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -43,6 +44,8 @@ ZipformerAsrProvider::ZipformerAsrProvider()
     : modelDir_("~/.local/share/vinput/models/zipformer-zh-en") {
     auto cfg = readConfigFile("zipformer.json");
     if (!cfg.empty()) {
+        reportConfigIssues("zipformer", "zipformer.json",
+                           validateConfigJson(cfg, localModelConfigSchema()));
         auto d = jsonStr(cfg, "model_dir");
         if (!d.empty()) modelDir_ = d;
         numThreads_ = jsonInt(cfg, "num_threads", numThreads_);
@@ -301,13 +304,18 @@ std::unique_ptr<IAsrProvider> ZipformerAsrProviderFactory::create() {
 
 std::string ZipformerAsrProviderFactory::displayName() const {
     std::string dir = "~/.local/share/vinput/models/zipformer-zh-en";
+    std::string warning;
     std::string cfg = readConfigFile("zipformer.json");
     if (!cfg.empty()) {
+        auto issues = validateConfigJson(cfg, localModelConfigSchema());
+        reportConfigIssues("zipformer", "zipformer.json", issues);
+        warning = firstConfigIssue(issues);
         auto d = jsonStr(cfg, "model_dir");
         if (!d.empty()) dir = d;
     }
     std::filesystem::path p(expandPath(dir));
-    return "Zipformer · " + p.filename().string() + " (local)";
+    std::string base = "Zipformer · " + p.filename().string() + " (local)";
+    return warning.empty() ? base : base + "\n⚠ zipformer.json: " + warning;
 }
 
 static bool _zipReg = []() {

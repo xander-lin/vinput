@@ -38,8 +38,8 @@ test_qwen_json = executable('test_qwen_json',
   'test_qwen_json.cpp',
   dependencies: [asr_provider_dep])
 
-test_secret_lifecycle = executable('test_secret_lifecycle',
-  'test_secret_lifecycle.cpp',
+test_config_schema = executable('test_config_schema',
+  'test_config_schema.cpp',
   dependencies: [asr_provider_dep])
 
 test('asr_registry', test_asr_registry)
@@ -52,4 +52,4 @@ test('audio_capture_stop', test_audio_capture_stop)
 test('cloud_provider_queue', test_cloud_provider_queue)
 test('diagnostic_log', test_diagnostic_log)
 test('qwen_json', test_qwen_json)
-test('secret_lifecycle', test_secret_lifecycle)
+test('config_schema', test_config_schema)

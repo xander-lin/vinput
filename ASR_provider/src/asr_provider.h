@@ -18,6 +18,7 @@ using AsrResultCallback = std::function<void(const std::string &text, bool isFin
 // raw detail for Unknown.
 enum class AsrErrorCategory {
     ConfigMissing,      // api_key / resource_id not configured
+    ConfigInvalid,      // config file failed schema/syntax validation
     AuthRejected,       // service rejected the key (401/403/InvalidApiKey)
     ModelNotFound,      // cloud model id unknown, or local model files missing
     LocalSetup,         // local engine misconfigured (binary missing, spawn/pipe)

@@ -73,9 +73,9 @@ cp config/audio.json.example ~/.config/vinput/audio.json
 cp config/qwen.json.example ~/.config/vinput/qwen.json
 cp config/doubao.json.example ~/.config/vinput/doubao.json
 
-# Cloud providers: put your API key into the JSON once; Vinput imports it
-# into the encrypted keyring (KWallet/GNOME Keyring) and removes the field
-# from the file on the next recognition. Re-adding the field updates the key.
+# Cloud providers: put your API key into the JSON (plaintext; chmod 600).
+# Every config file is validated on read — typos and syntax errors are
+# reported in the switch notification and the input panel.
 ```
 
 ### 3. Restart fcitx5
@@ -162,8 +162,8 @@ Every provider config is re-read before each recognition, so model and parameter
 
 | File | Purpose | Example |
 |------|---------|---------|
-| `qwen.json` | Qwen API key (imported to keyring), ASR model, hot words | copy from `config/qwen.json.example` |
-| `doubao.json` | Doubao API key (imported to keyring), resource ID, model | copy from `config/doubao.json.example` |
+| `qwen.json` | Qwen API key, ASR model, hot words | copy from `config/qwen.json.example` |
+| `doubao.json` | Doubao API key, resource ID, model | copy from `config/doubao.json.example` |
 
 ### Optional (all defaults in code)
 
@@ -176,12 +176,17 @@ Every provider config is re-read before each recognition, so model and parameter
 
 ### API key security
 
-`api_key` in `qwen.json`/`doubao.json` is a one-time write channel: on the
-next recognition Vinput imports the key into the encrypted Secret Service
-store (KWallet / GNOME Keyring via `secret-tool`), then removes the field
-from the JSON (atomic rewrite, mode `0600`). Writing the field again later
-updates the stored key. On systems without a keyring backend the plaintext
-field is kept with a warning, so headless setups keep working.
+API keys are plaintext fields in `qwen.json`/`doubao.json` (no secret store
+integration; removed 2026-10 by design). Keep the files mode `0600`:
+`chmod 600 ~/.config/vinput/{qwen,doubao}.json`.
+
+### Config validation
+
+Every config file is validated on read: JSON syntax errors (with byte
+offset) show in the input panel and disable the file's values; unknown
+fields get a "did you mean" suggestion, type mismatches and missing
+required fields are reported — warnings appear in the fcitx5 log and as a
+`⚠` line in the provider switch notification.
 
 ### Cloud polling
 

@@ -40,6 +40,7 @@
 #include "doubao_provider.h"      // 确保豆包后端被链接并自动注册
 #include "qwen_provider.h"        // 确保千问后端被链接并自动注册
 #include "audio_capture.h"
+#include "config_schema.h"
 #include "diagnostic_log.h"
 #include "output_handler.h"
 #include "vinput_config.h"
@@ -90,6 +91,9 @@ public:
 
         auto vjson = vinput::readConfigFile("vinput.json");
         if (!vjson.empty()) {
+            vinput::reportConfigIssues(
+                "vinput", "vinput.json",
+                vinput::validateConfigJson(vjson, vinput::vinputConfigSchema()));
             activationUsec_ = (uint64_t)vinput::jsonInt(vjson, "activation_msec", 300) * 1000;
             notificationTimeout_ = vinput::jsonInt(vjson, "notification_timeout", 2000);
             debounceCount_ = vinput::jsonInt(vjson, "debounce_count", 2);
@@ -748,6 +752,7 @@ private:
             case vinput::AsrErrorCategory::AudioData:
                 status = "Vinput: audio capture error";
                 break;
+            case vinput::AsrErrorCategory::ConfigInvalid:
             case vinput::AsrErrorCategory::InvalidRequest:
             case vinput::AsrErrorCategory::Runtime:
             case vinput::AsrErrorCategory::Unknown:

@@ -9,7 +9,6 @@ arch=('x86_64')
 url="https://github.com/xander-lin/vinput"
 license=('MIT')
 depends=('fcitx5' 'libebur128' 'libpulse' 'curl' 'speexdsp' 'libsoxr')
-optdepends=('libsecret: store cloud API keys in the keyring (secret-tool)')
 makedepends=('git' 'meson' 'ninja')
 provides=("$_pkgname")
 conflicts=("$_pkgname")

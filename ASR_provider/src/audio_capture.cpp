@@ -1,4 +1,5 @@
 #include "audio_capture.h"
+#include "config_schema.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -100,6 +101,8 @@ AudioCapture::AudioCapture() {
     if (!configLoaded) {
         auto cfg = readConfigFile("audio.json");
         if (!cfg.empty()) {
+            reportConfigIssues("capture", "audio.json",
+                               validateConfigJson(cfg, audioConfigSchema()));
             auto t = jsonDouble(cfg, "lufs_target", lufsTarget_);
             if (t > -100.0 && t < 0.0) lufsTarget_ = t;
             speexLevel_ = jsonInt(cfg, "speex_level", speexLevel_);

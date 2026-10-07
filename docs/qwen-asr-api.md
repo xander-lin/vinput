@@ -38,7 +38,7 @@ Vinput 的 `qwen` provider 通过 DashScope multimodal 同步接口调用阿里�
 
 | 字段 | 默认 | 说明 |
 |------|------|------|
-| `api_key` | 一次性通道 | 写入后下次识别自动导入加密密钥库（KWallet/GNOME Keyring）并从文件中删除；再次写入即更新密钥。无密钥库后端时保留明文并告警 |
+| `api_key` | 必填 | 明文百炼 API Key（建议文件权限 600；https://bailian.console.aliyun.com/?tab=model#/api-key） |
 | `model` | `qwen-audio-3.1-asr-flash` | 模型 ID，见上表 |
 | `endpoint` | 北京 DashScope 域名 | 可切换到 `{WorkspaceId}.cn-beijing.maas.aliyuncs.com` 新域名 |
 | `request_style` | `auto` | `auto` 按模型家族选请求格式；可强制 `input_audio` / `legacy` |

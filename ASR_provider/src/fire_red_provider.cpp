@@ -1,4 +1,5 @@
 #include "fire_red_provider.h"
+#include "config_schema.h"
 #include "vinput_config.h"
 #include "diagnostic_log.h"
 
@@ -43,6 +44,8 @@ FireRedAsrProvider::FireRedAsrProvider()
     : modelDir_("~/.local/share/vinput/models/sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26") {
     auto cfg = readConfigFile("fire_red.json");
     if (!cfg.empty()) {
+        reportConfigIssues("fire_red", "fire_red.json",
+                           validateConfigJson(cfg, localModelConfigSchema()));
         auto d = jsonStr(cfg, "model_dir");
         if (!d.empty()) modelDir_ = d;
         numThreads_ = jsonInt(cfg, "num_threads", numThreads_);
@@ -298,13 +301,18 @@ std::unique_ptr<IAsrProvider> FireRedAsrProviderFactory::create() {
 
 std::string FireRedAsrProviderFactory::displayName() const {
     std::string dir = "~/.local/share/vinput/models/sherpa-onnx-fire-red-asr2-zh_en-int8-2026-02-26";
+    std::string warning;
     std::string cfg = readConfigFile("fire_red.json");
     if (!cfg.empty()) {
+        auto issues = validateConfigJson(cfg, localModelConfigSchema());
+        reportConfigIssues("fire_red", "fire_red.json", issues);
+        warning = firstConfigIssue(issues);
         auto d = jsonStr(cfg, "model_dir");
         if (!d.empty()) dir = d;
     }
     std::filesystem::path p(expandPath(dir));
-    return "FireRed · " + p.filename().string() + " (local)";
+    std::string base = "FireRed · " + p.filename().string() + " (local)";
+    return warning.empty() ? base : base + "\n\u26a0 fire_red.json: " + warning;
 }
 
 static bool _frReg = []() {

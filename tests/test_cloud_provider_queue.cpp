@@ -1,11 +1,11 @@
 #include "doubao_provider.h"
 #include "qwen_provider.h"
-#include "secret_store.h"
 
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -88,8 +88,6 @@ int main() {
     fs::path root = (tmp && *tmp) ? tmp : "/tmp/vinput-cloud-provider-queue";
     fs::create_directories(root / ".config/vinput");
     setenv("HOME", root.c_str(), 1);
-    // Headless test environment: never touch the desktop secret store.
-    vinput::setActiveSecretStore(std::make_unique<vinput::NullSecretStore>());
     // Isolate from the installed /etc/vinput fallback (which carries a
     // placeholder api_key and would trigger real network requests).
     {

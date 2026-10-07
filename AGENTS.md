@@ -35,10 +35,16 @@ who want fast push-to-talk dictation without leaving the keyboard.
   installed to `/etc/vinput/`, overridable per-user in `~/.config/vinput/`.
   `advanced.json` was removed in the 2026-10 breaking restructure — each
   provider owns exactly one file now.
-- Cloud API keys follow the keyring lifecycle in `secret_store.h`: the
-  `api_key` JSON field is a one-time import channel into the Secret Service
-  store and is stripped after a successful import; without a keyring backend
-  the plaintext field is kept.
+- API keys are plaintext JSON fields (secret-store integration was added
+  and then removed in 2026-10 by explicit decision: no Secret Service on
+  the target desktop; simplicity wins). Recommend `chmod 600` on the
+  credential files.
+- Every config file is schema-validated on read (`src/config_schema.h`):
+  syntax errors carry a byte offset and disable the file (input-panel
+  error), unknown fields get "did you mean" suggestions, type mismatches
+  and missing required fields are logged and appended to the switch
+  notification. Schemas live next to the module; update them together
+  with the readers.
 
 ## Project Principles
 

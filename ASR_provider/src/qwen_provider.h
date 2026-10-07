@@ -16,12 +16,9 @@ namespace vinput {
 // Everything the Qwen request needs, resolved from qwen.json (+ setConfig
 // overrides) on the worker thread right before each request. The config file
 // is re-read per request so model switches need no restart or recompile.
-//
-// API key lifecycle: a plaintext api_key in qwen.json means "set/update the
-// key" — it is imported into the encrypted secret store and stripped from
-// the file; afterwards the key is read from the store (see secret_store.h).
+// api_key is a plaintext field in qwen.json (file mode 0600 recommended).
 struct QwenSettings {
-    std::string apiKey;             // resolved key (override > file > keyring)
+    std::string apiKey;             // resolved key (override > file)
     std::string model;
     std::string endpoint;
     std::string requestStyle;       // "auto" (default) | "input_audio" | "legacy"
@@ -31,6 +28,7 @@ struct QwenSettings {
     bool keepDialect = false;       // qwen-audio-3.1-asr-flash: keep dialect text
     bool speakerDiarization = false; // qwen-audio-3.1-asr-flash only
     long timeout = 60;              // whole-request curl timeout (timeout_sec)
+    std::string configError;        // fatal qwen.json issue (syntax error)
 };
 
 class QwenAsrProvider : public IAsrProvider {
@@ -69,7 +67,6 @@ private:
     QwenSettings resolveSettings();
 
     std::string apiKeyOverride_;   // set via setConfig; wins over everything
-    std::string keyringCache_;     // cached keyring lookup (worker thread only)
     std::shared_ptr<WorkerState> state_;
     std::thread worker_;
 };

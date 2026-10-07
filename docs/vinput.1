@@ -46,20 +46,10 @@ file. While holding CapsLock:
 Configuration files are stored in \fB~/.config/vinput/\fP.
 Every provider config is re-read before each recognition; model and
 parameter changes apply on the next recording without restarting fcitx5.
-.SS API key security
-Writing \fBapi_key\fP into \fBqwen.json\fP or \fBdoubao.json\fP is a
-one-time write channel: on the next recognition Vinput imports the key into
-the encrypted Secret Service store (KWallet / GNOME Keyring, via
-\fBsecret-tool\fP), then removes the field from the JSON by an atomic
-rewrite (file mode 0600). Writing the field again later updates the stored
-key. Without a keyring backend the plaintext field is kept with a warning.
-Inspect or clear stored keys with:
-.RS
-.nf
-secret-tool lookup service vinput provider qwen
-secret-tool clear service vinput provider qwen
-.fi
-.RE
+Every file is validated on read: JSON syntax errors (with byte offset) are
+shown in the input panel and the file's values are not trusted; unknown
+fields get a "did you mean" suggestion and type mismatches are named in the
+fcitx5 log and the provider switch notification.
 .SS User-facing (must edit)
 .TP
 \fBdoubao.json\fP
