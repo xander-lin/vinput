@@ -154,6 +154,8 @@ private:
     // tmp + rename，文件权限 0600。
     void writeConfigJson(const std::string &json) {
         namespace fs = std::filesystem;
+        std::error_code mk;
+        fs::create_directories(vinput::configDir(), mk);
         std::string tmp = vinput::configPath("config.json.tmp");
         {
             std::ofstream f(tmp, std::ios::trunc);
@@ -511,8 +513,10 @@ private:
             return;
         }
 
-        // 根据配置中的默认后端 ID 查找索引
-        const auto defaultId = readProviderSelection();
+        // 根据配置中的默认后端 ID 查找索引；全新安装（无 config.json）
+        // 用文档默认 qwen，而不是注册顺序的首位。
+        auto defaultId = readProviderSelection();
+        if (defaultId.empty()) defaultId = "qwen";
         for (int i = 0; i < (int)list.size(); i++) {
             if (list[i].first == defaultId) {
                 providerIndex_ = i;
