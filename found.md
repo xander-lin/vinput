@@ -137,3 +137,24 @@
     one-liners; a failing `cd` must abort the rest.
   - After any file-producing shell step, verify non-empty before committing
     (`wc -l`) — the empty PKGBUILD sailed through `git add -A`.
+
+## 8. A redirect truncates the target even when the producing command fails
+
+- **Mistake/context**: `makepkg --printsrcinfo > .SRCINFO` ran in the repo
+  root, where `pkgver()` cannot evaluate (no VCS source dir yet) and makepkg
+  errored out with "pkgver is not allowed to be empty". The shell had already
+  created/truncated `.SRCINFO`, so a zero-byte file was committed — the same
+  failure mode as #7, one indirection away.
+- **Root cause**: `>` is applied by the shell before the command's exit status
+  is known; a command that prints nothing leaves an empty target. Nothing in
+  the pipeline reports "the producer died" to git.
+- **Correction**: Regenerated `.SRCINFO` through a guarded sequence
+  (`cmd > tmp && [ -s tmp ] && mv tmp target`) and committed the result.
+- **Prevention**:
+  - Never `cmd > tracked_file` in one step for a generated/tracked file. Use
+    `cmd > /tmp/x && [ -s /tmp/x ] && cp /tmp/x tracked_file`, or check
+    `$?` and the byte count before the file can reach `git add`.
+  - Generated files need a generator that works in-repo; if the generator
+    only works in a build directory, generate there and copy the result back.
+  - `git add -A` will happily stage empty files; check `git diff --cached
+    --stat` for suspicious deletions of line counts before committing.
