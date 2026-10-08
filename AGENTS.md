@@ -72,6 +72,15 @@ who want fast push-to-talk dictation without leaving the keyboard.
 - Build: meson (`meson.build`, `meson_options.txt`, per-dir `meson.build`).
   Packaging: PKGBUILD (Arch). Verification: `ninja -C build` + tests under
   `tests/`.
+- Release chain: repo → GitHub (`origin`) + Gitee (`gitee`, PKGBUILD source) →
+  AUR (`aur/fcitx5-vinput-git`). For a `-git` package AUR and paru can only
+  display the **static** `pkgver=` placeholder (they cannot run `pkgver()`),
+  so keep that placeholder at the real current version and regenerate
+  `.SRCINFO` (`makepkg --printsrcinfo > /tmp/x && [ -s /tmp/x ] && cp /tmp/x
+  .SRCINFO`) before every push to AUR. AUR push: SSH as `aur` with the full
+  package name — `aur@aur.archlinux.org:fcitx5-vinput-git.git` (HTTPS push
+  is rejected with 403). aurweb's RPC index lags a git push by ~2 minutes, so
+  a stale `paru -qa` right after pushing is normal, not a packaging bug.
 - Docs live in `docs/` (`qwen-asr-api.md` etc.), accumulated engineering notes
   in `FINDINGS.md` (historical, at repo root).
 
