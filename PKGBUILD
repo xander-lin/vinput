@@ -2,10 +2,12 @@
 
 pkgname=fcitx5-vinput-git
 _pkgname=fcitx5-vinput
-# Placeholder only — makepkg requires a non-empty pkgver before it downloads
-# the VCS source. The real version is computed from git history by pkgver()
-# below at build time; never treat this line as the package version.
-pkgver=0.1.0.r0.0000000
+# Placeholder only — makepkg needs a non-empty pkgver before it downloads the
+# VCS source, and AUR/paru display whatever sits here (they cannot run
+# pkgver()). Keep it at the current real version so the AUR listing is not
+# stale; the authoritative version is computed from git history by pkgver()
+# below at build time. Bump this + regenerate .SRCINFO before pushing to AUR.
+pkgver=0.1.0.r151.f6ecc4b
 pkgrel=1
 pkgdesc="Voice input addon for fcitx5: push-to-talk ASR via CapsLock"
 arch=('x86_64')
